@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from avannotate import requirements
@@ -103,6 +104,92 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_batch(args: argparse.Namespace) -> int:
+    """The whole pipeline over a corpus, several videos at a time."""
+
+    from avannotate import batch as batch_module
+
+    sources = batch_module.read_video_list(args.input, base=Path.cwd())
+    output = args.output.expanduser().resolve()
+    config_root = (
+        args.configs.expanduser().resolve()
+        if args.configs
+        else (Path(__file__).resolve().parents[1] / "configs")
+    )
+
+    stages = tuple(args.stage) if args.stage else STAGE_ORDER
+    unknown = [name for name in stages if name not in STAGE_ORDER]
+    if unknown:
+        raise SystemExit(f"unknown stage(s): {', '.join(unknown)}")
+
+    jobs = batch_module.plan_jobs(sources, output=output)
+    gpus = batch_module.parse_gpu_list(args.gpus)
+    if gpus is None:
+        gpus = batch_module.detect_gpus()
+    devices, workers = batch_module.plan_workers(gpus=gpus, requested=args.workers)
+
+    if args.only_missing:
+        jobs = tuple(job for job in jobs if not batch_module.is_complete(job))
+        if not jobs:
+            print("every video in the list already has a deliverable")
+            return 0
+
+    print(f"videos    {len(jobs)}")
+    print(f"stages    {', '.join(stages)}")
+    print(f"configs   {config_root}")
+    print(f"output    {output}")
+    print(
+        f"workers   {workers}"
+        + (f"  on GPUs {', '.join(str(item) for item in devices)}" if devices else "  on CPU")
+    )
+    print(flush=True)
+
+    started = time.monotonic()
+    stage_events: list[str] = []
+
+    def on_stage(video_id: str, stage: str, skipped: bool) -> None:
+        # One line per stage, so a batch that is stuck inside a long stage is
+        # visibly inside a long stage rather than apparently dead.
+        mark = "skip" if skipped else "run "
+        elapsed = batch_module.format_duration(time.monotonic() - started)
+        line = f"        {elapsed:>9}  {mark}  {video_id}  {stage}"
+        stage_events.append(line)
+        if args.verbose:
+            print(line, flush=True)
+
+    results = batch_module.run_corpus(
+        jobs,
+        stages=stages,
+        config_root=config_root,
+        workers=workers,
+        gpus=tuple(devices),
+        force=args.force,
+        on_stage=on_stage,
+    )
+
+    index_path = output / "index.jsonl"
+    failures_path = output / "failures.jsonl"
+    failures = [item for item in results if not item.ok]
+    batch_module.write_jsonl(index_path, (item.to_dict() for item in results))
+    batch_module.write_jsonl(failures_path, (item.to_dict() for item in failures))
+
+    summary = batch_module.summarise(results)
+    print()
+    print(f"videos   {summary['succeeded']} ok, {summary['failed']} failed")
+    print(f"time     {batch_module.format_duration(time.monotonic() - started)}")
+    slowest = str(summary["slowest_stage"])
+    if slowest:
+        per_stage = summary["seconds_per_stage"]
+        total = per_stage[slowest] if isinstance(per_stage, dict) else "?"
+        print(f"slowest  {slowest} ({total}s total)")
+    print(f"index    {index_path}")
+    if failures:
+        print(f"failures {failures_path}")
+        for item in failures[:5]:
+            print(f"         {item.video_id}: {item.failed_stage}: {item.error}")
+    return 1 if failures else 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     module = get_stage(args.stage)
     inputs = _read_inputs(args.input, base=Path.cwd())
@@ -177,6 +264,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="re-run even when the previous outputs are present and unchanged",
     )
     run.set_defaults(handler=_cmd_run)
+
+    batch = subparsers.add_parser(
+        "batch",
+        help="run every stage over a list of videos, several at a time",
+        description=(
+            "The whole pipeline over a corpus. One video is the unit of work, "
+            "so each is finished or not; a failure is recorded and the batch "
+            "carries on."
+        ),
+    )
+    batch.add_argument(
+        "--input", required=True, type=Path, help="a text file listing the videos"
+    )
+    batch.add_argument("--output", required=True, type=Path, help="output root directory")
+    batch.add_argument(
+        "--configs",
+        type=Path,
+        help="directory of stage configs (default: the repository's configs/)",
+    )
+    batch.add_argument(
+        "--gpus",
+        help="comma-separated device indices, e.g. 0,1,2 (default: detect them)",
+    )
+    batch.add_argument(
+        "--workers",
+        type=int,
+        help="videos at once (default: one per GPU, or 1 with no GPU)",
+    )
+    batch.add_argument(
+        "--stage",
+        action="append",
+        help="run only this stage; repeatable. Default: all of them, in order.",
+    )
+    batch.add_argument(
+        "--only-missing",
+        action="store_true",
+        help="skip videos that already have a deliverable",
+    )
+    batch.add_argument(
+        "--force", action="store_true", help="re-run even when outputs are unchanged"
+    )
+    batch.add_argument(
+        "-v", "--verbose", action="store_true", help="print a line per stage, not per video"
+    )
+    batch.set_defaults(handler=_cmd_batch)
     return parser
 
 

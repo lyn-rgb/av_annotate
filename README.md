@@ -67,6 +67,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s10_caption.py` | S10 — what the video and each shot look like |
 | `avannotate/stages/s11_compose.py` | S11 — the deliverable and its quality report |
 | `avannotate/requirements.py` | what each stage needs from the machine |
+| `avannotate/batch.py` | the corpus driver: planning, pools, progress |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -81,9 +82,11 @@ clustering), **S4** (diarization), **S5** (active speaker detection), **S6**
 (paralinguistic tagging), **S10** (captioning) and **S11** (compose) — plus the
 deliverable format, segmentation, and the QA gates. 611 tests.
 
-Not yet built: the **batch driver** that walks a corpus and isolates failures.
-Every stage is resumable on its own, so the driver is a loop around the CLI
-rather than new machinery — see the plan's M1.
+The **batch driver** is `avannotate batch`, or `scripts/run_batch.sh` for a
+one-command run: it walks a corpus, runs one video per worker, pins each worker
+to a GPU, prints progress per video, and writes `index.jsonl` and
+`failures.jsonl` beside the outputs. One bad video is recorded and the batch
+carries on.
 
 **S4, S5, S7, S8, S9 and S10 need GPUs and packages that are not installed
 here.** Their model adapters are written against source that was read rather
@@ -130,6 +133,39 @@ avannotate run --stage s11-compose --input data/examples.txt --output ./outputs 
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
 after a crash costs only the video that was in flight.
+
+### Running a corpus
+
+```bash
+scripts/run_batch.sh --data /data/videos --list names.txt --output /results
+```
+
+or the same thing spelled out:
+
+```bash
+avannotate batch --input names.txt --output /results
+```
+
+A **video** is the unit of work rather than a stage, so each one is finished or
+not: a corpus can be stopped at any point and still hold complete deliverables,
+and a failure at S7 leaves that video incomplete rather than leaving every video
+incomplete. One worker per GPU, because each stage adapter loads its own model
+and two workers sharing a card would swap weights for every video.
+
+```
+videos    240
+stages    s0-preprocess, s1-faces, ... s11-compose
+workers   4  on GPUs 0, 1, 2, 3
+
+[   1/240]   0.4%  ok    a3f1c2  1m 42s  utt=48 faces=2 gates=0  eta 6h 47m
+[   2/240]   0.8%  ok    b41ceb  2m 06s  utt=31 faces=1 gates=0  eta 6h 58m
+[   3/240]   1.2%  FAIL  c4792c  0m 11s  s1-faces: SSLError: ...
+```
+
+`index.jsonl` gets one record per video with a per-stage timing breakdown;
+`failures.jsonl` gets the failures with their full error text. The exit code is
+non-zero if anything failed, so a scheduler notices without the corpus paying
+for it.
 
 ### Before a batch: ask the machine what it has
 

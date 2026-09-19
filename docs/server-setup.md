@@ -2,10 +2,23 @@
 
 ```bash
 scripts/setup_server.sh      # clones, installs, fetches what it can
+scripts/download_models.sh   # every model, into ./models
 avannotate doctor            # says what is still missing, and how to fix it
 ```
 
-Those two are the setup.
+Those three are the setup. **`download_models.sh` sends every Hugging Face
+request through `hf-mirror.com`** by setting `HF_ENDPOINT`, which is honoured by
+every library using `huggingface_hub` — including ClearerVoice and
+faster-whisper, whose checkpoints are fetched by their own code rather than by
+anything here. Set the same two variables for a run:
+
+```bash
+export HF_HOME=/path/to/models/hf
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+If you would rather not rely on the mirror, the same variables accept any
+endpoint, including your own cache.
 
 **If the server cannot reach github.com, start with the bundle instead.** More
 depends on GitHub than this repository's own three URLs: insightface fetches
