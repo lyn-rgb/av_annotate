@@ -11,22 +11,27 @@
 # Usage:
 #   scripts/setup_server.sh [--root DIR] [--stages LIST] [--no-weights]
 #
-#   --root DIR      where the checkouts go (default: ./third_party)
+#   --root DIR      where the checkouts go (default: ./models)
 #   --stages LIST   comma-separated, default every stage that needs something
 #   --no-weights    skip the downloads that this script can do
+#
+# The default root is not arbitrary: the shipped configs name their model paths
+# relative to themselves as "../models/<name>", so cloning anywhere else would
+# leave every config pointing at nothing and the doctor reporting it forever.
+# /models/ is gitignored, which is what it is there for.
 #
 # Idempotent: re-running it fetches nothing that is already there.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-THIRD_PARTY="$ROOT/third_party"
+MODELS="$ROOT/models"
 STAGES="all"
 FETCH_WEIGHTS=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --root) THIRD_PARTY="$2"; shift 2 ;;
+        --root) MODELS="$2"; shift 2 ;;
         --stages) STAGES="$2"; shift 2 ;;
         --no-weights) FETCH_WEIGHTS=0; shift ;;
         -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -46,7 +51,7 @@ wants() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-mkdir -p "$THIRD_PARTY"
+mkdir -p "$MODELS"
 
 # --------------------------------------------------------------------------- #
 # ffmpeg is not optional: S0 through S11 all decode through it
@@ -67,7 +72,7 @@ done
 
 if wants s4-diarize; then
     say "S4: DiariZen"
-    DEST="$THIRD_PARTY/DiariZen"
+    DEST="$MODELS/DiariZen"
     if [[ -d "$DEST/.git" ]]; then
         note "already cloned at $DEST"
     else
@@ -107,7 +112,11 @@ fi
 
 if wants s5-asd; then
     say "S5: LoCoNet"
-    DEST="$THIRD_PARTY/LoCoNet_ASD"
+    # Nested, because configs/s5.loconet.json names ../models/loconet/... and
+    # a checkout one directory away from where the config expects it is a
+    # checkout the pipeline will never find.
+    DEST="$MODELS/loconet/LoCoNet_ASD"
+    mkdir -p "$MODELS/loconet"
     if [[ -d "$DEST/.git" ]]; then
         note "already cloned at $DEST"
     else
@@ -123,9 +132,12 @@ if wants s5-asd; then
     warn "the AVA weights are NOT downloaded by this script."
     warn "Open the repository README and use its Google Drive link:"
     warn "    $DEST/README.md"
-    warn "Save it as $THIRD_PARTY/loconet_AVA.model, then set in configs/s5.loconet.json:"
-    warn "    \"repo\":       \"$DEST\""
-    warn "    \"checkpoint\": \"$THIRD_PARTY/loconet_AVA.model\""
+    warn "configs/s5.loconet.json already expects it at ../models/loconet/, so"
+    warn "putting it there needs no edit at all:"
+    warn "    $MODELS/loconet/loconet_AVA.model"
+    warn "Otherwise set both keys in that config:"
+    warn "    \"repo\":       \"<wherever you cloned LoCoNet_ASD>\""
+    warn "    \"checkpoint\": \"<wherever you saved the .model>\""
 fi
 
 # --------------------------------------------------------------------------- #
@@ -169,16 +181,26 @@ if wants s9-paralinguistic; then
         python -c "from panns_inference import labels; print(f'   {len(labels)} AudioSet labels cached')" \
             || warn "could not fetch the AudioSet labels"
 
-        PANNS_DIR="${PANNS_DIR:-$HOME/panns_data}"
+        # Under models/, like everything else, so configs/s9.paralinguistic.json
+        # can name it with the same ../models/ convention.
+        PANNS_DIR="$MODELS/panns"
         PANNS_PATH="$PANNS_DIR/Cnn14_mAP=0.431.pth"
         if [[ -f "$PANNS_PATH" ]]; then
             note "PANNs checkpoint already at $PANNS_PATH"
         else
-            warn "PANNs' checkpoint is NOT downloaded by this script (Zenodo, 312 MB)."
-            warn "Fetch it and set \"checkpoint\" in configs/s9.paralinguistic.json:"
-            warn "    mkdir -p $PANNS_DIR && curl -L -C - -o '$PANNS_PATH' \\"
-            warn "      'https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1'"
+            mkdir -p "$PANNS_DIR"
+            note "fetching PANNs' checkpoint (Zenodo, 312 MB)"
+            if curl -L -C - --fail -s -o "$PANNS_PATH" \
+                'https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1'; then
+                note "saved to $PANNS_PATH"
+            else
+                warn "the download failed or was interrupted; resume it with:"
+                warn "    curl -L -C - -o '$PANNS_PATH' \\"
+                warn "      'https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1'"
+            fi
         fi
+        warn "then set \"checkpoint\" in configs/s9.paralinguistic.json to:"
+        warn "    \"../models/panns/Cnn14_mAP=0.431.pth\""
     fi
 fi
 
