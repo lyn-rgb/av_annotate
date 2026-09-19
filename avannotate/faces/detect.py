@@ -146,7 +146,7 @@ class InsightFaceDetector:
         providers: tuple[str, ...] = ("CUDAExecutionProvider", "CPUExecutionProvider"),
     ) -> None:
         try:
-            from insightface.app import FaceAnalysis  # type: ignore[import-untyped]
+            from insightface.app import FaceAnalysis
         except ModuleNotFoundError as error:
             raise DetectorError(
                 "insightface is required for this detector: pip install insightface onnxruntime"

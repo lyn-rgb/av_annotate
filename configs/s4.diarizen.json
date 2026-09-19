@@ -1,0 +1,7 @@
+{
+  "backend": "diarizen",
+  "model": "BUT-FIT/diarizen-wavlm-large-s80-md-v2",
+  "device": "cuda",
+  "merge_gap_seconds": 0.2,
+  "min_turn_seconds": 0.1
+}
