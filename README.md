@@ -49,6 +49,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/audio/` | diarization turns and their geometry |
 | `avannotate/asd/` | windowing, face crops, and prediction stitching |
 | `avannotate/tse/` | segment planning, the face-track crop video, the extractor |
+| `avannotate/asr/` | source routing, the language vote, words, the recogniser |
 | `avannotate/stages/base.py` | contexts, artifacts, and the resume record |
 | `avannotate/stages/s0_preprocess.py` | S0 — probe, demux, shot boundaries |
 | `avannotate/stages/s1_faces.py` | S1 — face detection and identity vectors |
@@ -58,6 +59,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s5_asd.py` | S5 — which face is talking |
 | `avannotate/stages/s6_associate.py` | S6 — which face each speaker is |
 | `avannotate/stages/s7_tse.py` | S7 — one person's voice, one file per segment |
+| `avannotate/stages/s8_asr.py` | S8 — what each person said, and when |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -67,15 +69,15 @@ what makes it testable without a model or a GPU.
 
 Implemented and tested: **S0 (probe, audio, shots)**, **S1 (detection +
 embeddings)**, **S2 (tracking)**, **S3 (identity clustering)**, **S4
-(diarization)**, **S5 (active speaker detection)**, **S6 (association)** and
-**S7 (target-speaker extraction)**, plus the deliverable format, segmentation,
-and the QA gates. 443 tests.
+(diarization)**, **S5 (active speaker detection)**, **S6 (association)**,
+**S7 (target-speaker extraction)** and **S8 (ASR)**, plus the deliverable
+format, segmentation, and the QA gates. 483 tests.
 
-Not yet implemented: S8–S11 — ASR, paralinguistic tagging, captioning, and the
+Not yet implemented: S9–S11 — paralinguistic tagging, captioning, and the
 compose step — plus the batch driver. See the plan for the stage DAG and model
 choices.
 
-**S4, S5 and S7 need GPUs and packages that are not installed here.** Their
+**S4, S5, S7 and S8 need GPUs and packages that are not installed here.** Their
 model adapters are written against documented interfaces and could not be run;
 each names in its own docstring what to verify first. Everything that decides
 what goes into a model pass, and what its output means, is separate, pure, and
@@ -99,6 +101,8 @@ avannotate run --stage s6-associate --input data/examples.txt --output ./outputs
     --config configs/s6.associate.json
 avannotate run --stage s7-tse     --input data/examples.txt --output ./outputs \
     --config configs/s7.clearvoice.json
+avannotate run --stage s8-asr     --input data/examples.txt --output ./outputs \
+    --config configs/s8.whisper.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -181,6 +185,61 @@ An identity S3 dropped but S6 still assigned speech to is reported under
 `skipped` with its reason, not silently omitted — the count of people with audio
 and the count of people in the annotation have to be reconcilable by whoever
 reads `summary.json`.
+
+### S8 asks for the mix, except when it cannot
+
+There are two recordings of every segment: the original mix, which is what the
+microphone heard, and S7's extraction, which holds one person. The mix is better
+audio and the extraction is better *evidence*, and which one a segment gets is
+decided by interval arithmetic before any model runs.
+
+The rule is the overlap: the mix while this person is the only one talking, the
+extraction when they are not. Both halves matter. A recogniser handed two
+overlapping voices returns one fluent transcript containing both people's words,
+and nothing in its output says which words were whose — so a segment read from
+the mix during simultaneous speech is not slightly worse, it is silently
+attributed to the wrong person. Run the other way, sending everything to the
+extraction would put a separation model between the speaker and the recogniser
+for the majority of segments that never needed it.
+
+Overlap is measured against every *other* identity's speech, and a person
+overlapping themselves is not overlap — S6 merges one person's turns, so a
+merge boundary would otherwise read as two competing voices.
+
+### S8 decides the video's language once, then tells the short segments
+
+Whisper detects a language from a single 30-second window. A two-second
+utterance is a small fraction of that evidence, and its guess is not a weak
+version of the right answer — it is frequently a confident wrong one. A wrong
+language does not produce a bad transcript of the right words; it makes the
+recogniser *translate*, which reads perfectly and is worth nothing.
+
+So the segments long enough to be evidence are transcribed first, with detection
+left on, and the video's language is the duration-weighted winner among them —
+weighted by speech time, not by how many segments each language appeared in, so
+twenty two-second clips do not outvote two minutes. Segments too short to vote
+are then transcribed a second time with that language forced.
+
+A segment that confidently detects a *different* language from the video's is
+left as it is and counted. A five-second English sentence inside a Chinese video
+is either a real code-switch, which should stay English, or a detection error,
+which forcing Chinese would turn into nonsense — and the two are not
+distinguishable from here, so the rate is reported instead of guessed at.
+
+Three consequences worth stating:
+
+- **The cost follows speech, not video.** Each segment is transcribed once. The
+  only extra work is one detection pass, and only for a video with no segment
+  long enough to vote.
+- **The extraction carries no context and the mix does** — 0.25 s per side, so
+  the recogniser does not open on a clipped phoneme. S7 trimmed its output to
+  the segment before writing it, so that path has none. Words in the padding are
+  dropped by a coverage rule, which is why the text is assembled from words
+  rather than taken from the recogniser's own segment text.
+- **Hallucination flags are recorded, never gated.** `empty`, `no_speech`,
+  `low_confidence`, `repetition` are the published heuristics for a recogniser
+  inventing text. A video where somebody whispers trips them throughout and is
+  still correct, so they exist to rank videos for review, not to reject any.
 
 ### What S1 will not do
 

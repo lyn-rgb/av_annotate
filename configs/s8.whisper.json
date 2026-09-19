@@ -1,0 +1,19 @@
+{
+  "backend": "faster-whisper",
+  "model": "large-v3",
+  "device": null,
+  "compute_type": null,
+  "download_root": null,
+  "beam_size": 5,
+  "vad_filter": false,
+  "condition_on_previous_text": false,
+  "context_seconds": 0.25,
+  "min_overlap_seconds": 0.10,
+  "min_detect_seconds": 3.0,
+  "detect_seconds": 30.0,
+  "detect_gap_seconds": 0.25,
+  "min_avg_logprob": -1.0,
+  "max_no_speech_prob": 0.6,
+  "max_compression_ratio": 2.4,
+  "sample_rate": 16000
+}

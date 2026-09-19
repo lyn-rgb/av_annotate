@@ -148,6 +148,68 @@ the config, open one `crops/F001_0000.mp4`, and confirm it holds exactly one fac
 and that the face is the right person's. That is the entire workaround, so it is
 the one thing worth looking at with your own eyes.
 
+## faster-whisper
+
+```bash
+pip install faster-whisper
+```
+
+It pulls CTranslate2 and downloads the checkpoint from Hugging Face on first
+use, so the first run needs network access. `large-v3` is about 3 GB in fp16.
+Set `download_root` in the stage config (or `HF_HOME`) to a shared cache if
+several jobs run at once.
+
+### What is verified, and what is not
+
+The interface was read off **faster-whisper 1.2.1** — the signature, the field
+names, and the two properties below are all confirmed against that release's
+source, not recalled. Nothing has been *run*, so behaviour on real audio is
+open. The two properties that matter here:
+
+- **`word.word` keeps its leading space**, and upstream's own test asserts
+  `segment.text == "".join(word.word for word in segment.words)`. That is the
+  same join `avannotate/asr/text.py` performs, and it is why the words are
+  joined with no separator: a rule that inserted a space would break Chinese and
+  a rule that stripped the words first would glue English together.
+- **A numpy array is used as-is, at 16 kHz, with no resampling and no check.**
+  `decode_audio` is only called for a path or a file object. So an 8 kHz file
+  does not fail — it transcribes the wrong frequencies against the wrong time
+  base and returns every timestamp at half scale, reading plausibly while doing
+  it. `avannotate/asr/audio.py` checks the rate and refuses rather than
+  resampling past it.
+
+### Where the GPU time goes, and what is not worth trying
+
+One decode per segment, so the cost tracks speaking time. `beam_size: 5` is the
+default and is most of the cost; a batch run that wants speed can drop it to 1
+and lose some accuracy on hard audio.
+
+`BatchedInferencePipeline` is **not** usable here despite looking like the
+obvious speedup: it batches overlapping *windows of one input*, not several
+inputs, and its defaults differ from `WhisperModel.transcribe` in ways that
+matter (`vad_filter=True`, `without_timestamps=True`, and it silently forces
+`condition_on_previous_text=False`). Since this stage already isolates one
+speaker per call, there are no windows to batch — the parallelism is across
+videos, not within one.
+
+### What to verify on the first run
+
+1. **`detect_language` accepts the sample array.** The sample fallback passes a
+   1-D float32 array and nothing else. Leave `language_detection_threshold` at
+   its default: it is annotated `Optional[float]` but dereferenced unguarded, so
+   passing `None` explicitly raises rather than defaulting.
+2. **Timestamps against a known clip.** Transcribe one segment, listen to it,
+   and check the words land where they are said. A wrong `SegmentSource.origin`
+   shifts a whole segment by a constant, which no amount of reading the
+   transcript will reveal.
+3. **The language on a monolingual clip.** If `summary.json` reports something
+   other than the language you know the video is in, the vote is working on
+   segments too short to be evidence, and `min_detect_seconds` wants raising.
+
+The cheapest end-to-end check is one video whose overlap you can hear: look at
+`transcripts.json` and confirm the segments marked `"source": "extracted"` are
+the ones where two people were talking at once.
+
 ## Running the pipeline
 
 ```bash
@@ -166,6 +228,8 @@ avannotate run --stage s6-associate --input videos.txt --output ./outputs \
     --config configs/s6.associate.json
 avannotate run --stage s7-tse       --input videos.txt --output ./outputs \
     --config configs/s7.clearvoice.json
+avannotate run --stage s8-asr       --input videos.txt --output ./outputs \
+    --config configs/s8.whisper.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -184,6 +248,7 @@ Measured here, on CPU, over 26 seconds of video across three clips:
 | S4 (DiariZen) | not measured here | GPU; the WavLM front end is the cost |
 | S5 (LoCoNet) | not measured here | GPU; one pass per target per window |
 | S7 (ClearerVoice) | not measured here | GPU; scales with speaking time, not screen time |
+| S8 (faster-whisper) | not measured here | GPU; one decode per segment, so also speech-proportional |
 
 S1 dominates and is what to profile first on real hardware. `embedding_interval_seconds`
 changes only disk, not runtime: insightface computes the vector as part of its

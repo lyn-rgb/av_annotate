@@ -20,6 +20,7 @@ from avannotate.stages import (
     s5_asd,
     s6_associate,
     s7_tse,
+    s8_asr,
 )
 from avannotate.stages.base import StageContext, StageRun
 
@@ -59,6 +60,7 @@ _MODULES: dict[str, ModuleType] = {
     s5_asd.STAGE: s5_asd,
     s6_associate.STAGE: s6_associate,
     s7_tse.STAGE: s7_tse,
+    s8_asr.STAGE: s8_asr,
 }
 
 
