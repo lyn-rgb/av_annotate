@@ -127,17 +127,42 @@ if wants s5-asd; then
     note "installing the packages its inference path needs"
     python -m pip install 'avannotate[asd]' || python -m pip install torch opencv-python-headless
 
-    # The one thing no script can do.  Stated as a command to run rather than
-    # as a paragraph to read.
+    # The one thing no script can fetch: the weights sit behind a Google Drive
+    # link, which needs a browser.  Stated as commands rather than as prose.
+    AVAMODEL="$MODELS/loconet/loconet_AVA.model"
     warn "the AVA weights are NOT downloaded by this script."
     warn "Open the repository README and use its Google Drive link:"
     warn "    $DEST/README.md"
-    warn "configs/s5.loconet.json already expects it at ../models/loconet/, so"
-    warn "putting it there needs no edit at all:"
-    warn "    $MODELS/loconet/loconet_AVA.model"
-    warn "Otherwise set both keys in that config:"
-    warn "    \"repo\":       \"<wherever you cloned LoCoNet_ASD>\""
-    warn "    \"checkpoint\": \"<wherever you saved the .model>\""
+    warn "configs/s5.loconet.json already expects them at ../models/loconet/, so"
+    warn "saving the file here needs no edit at all: $AVAMODEL"
+
+    # And the step that saves 275 MB.  Building the model makes torchvggish
+    # download VGGish's pretrained weights into torch's hub cache -- and then
+    # LoCoNet's own checkpoint overwrites every one of them.  Those weights are
+    # already inside the checkpoint under "audioEncoder", key for key, so the
+    # cache can be filled from it instead.  20 MB of local copying against a
+    # 275 MB download that some servers cannot make at all.
+    if [[ -f "$AVAMODEL" ]]; then
+        say "seeding torch's hub cache from the checkpoint (saves a 275 MB download)"
+        python - "$AVAMODEL" <<'PYEOF'
+import os, sys, torch
+ckpt = torch.load(sys.argv[1], map_location="cpu")
+inner = "model.module.model.audioEncoder."
+audio = {k[len(inner):]: v for k, v in ckpt.items() if k.startswith(inner)}
+if not audio:
+    raise SystemExit(
+        "no audioEncoder weights in the checkpoint; the VGGish cache cannot be "
+        "seeded from it and the 275 MB download will happen on first use"
+    )
+target = os.path.join(
+    os.environ.get("TORCH_HOME") or os.path.expanduser("~/.cache/torch"),
+    "hub", "checkpoints", "vggish-10086976.pth",
+)
+os.makedirs(os.path.dirname(target), exist_ok=True)
+torch.save(audio, target)
+print(f"   {target}: {os.path.getsize(target) // 1024 // 1024} MB from {len(audio)} keys")
+PYEOF
+    fi
 fi
 
 # --------------------------------------------------------------------------- #

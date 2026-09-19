@@ -86,9 +86,10 @@ of the pipeline depends on.
 
 ## LoCoNet
 
-**This one works, and a plain clone is enough — verified by building the network
-and running a forward pass.** It is not a package, so it needs a checkout and a
-couple of things its own instructions omit:
+**This one works, and a plain clone is enough — verified end to end with the
+real repository, the real VGGish weights and the real release checkpoint, no
+stubs anywhere.** It is not a package, so it needs a checkout and a couple of
+things its own instructions omit:
 
 ```bash
 git clone https://github.com/SJTUwxz/LoCoNet_ASD      # or: scripts/setup_server.sh
@@ -102,13 +103,35 @@ pip install resampy                                    # see below
    imports it, so model construction fails with `ModuleNotFoundError: resampy`
    and nothing in the repository warns you. It is in this project's `asd` extra.
 
-2. **Building the model downloads 275 MB of VGGish weights** from
-   `github.com/harritaylor/torchvggish/releases`, at construction time, whether
-   or not it is useful — and it is not useful, because LoCoNet's own checkpoint
-   overwrites those weights a moment later. There is no argument to skip it
-   short of patching `model/loconet_encoder.py` to pass `pretrained=False`.
-   Pre-place it at `~/.cache/torch/hub/checkpoints/vggish-10086976.pth` on an
-   air-gapped machine.
+2. **Building the model downloads 275 MB of VGGish weights that are already in
+   the checkpoint.** The constructor calls `torchvggish.VGGish(...)` with
+   `pretrained=True`, so it fetches them from
+   `github.com/harritaylor/torchvggish/releases` at construction time — and then
+   LoCoNet's own checkpoint overwrites every one of them a moment later.
+
+   **They can be taken from the checkpoint instead.** Its `audioEncoder`
+   sub-state is key-for-key identical to VGGish's own state dict — verified: 18
+   keys each, set equality both ways — so the hub cache can be filled from the
+   131 MB file you must download anyway:
+
+   ```bash
+   python - <<'EOF'
+   import os, torch
+   ckpt = torch.load("models/loconet/loconet_AVA.model", map_location="cpu")
+   inner = "model.module.model.audioEncoder."
+   audio = {k[len(inner):]: v for k, v in ckpt.items() if k.startswith(inner)}
+   target = os.path.expanduser("~/.cache/torch/hub/checkpoints/vggish-10086976.pth")
+   os.makedirs(os.path.dirname(target), exist_ok=True)
+   torch.save(audio, target)
+   EOF
+   ```
+
+   That is 20 MB of local copying against a 275 MB download — which matters most
+   where it is least available: this download failed four times on an ordinary
+   connection while writing this, each time leaving a truncated file that
+   `torch.load` reports as `unexpected EOF` rather than as an incomplete
+   download. `scripts/setup_server.sh` does this automatically once the
+   checkpoint is in place.
 
 3. **`loconet.py` cannot be imported.** It does `from xxlib.utils.distributed
    import ...` and `xxlib` exists nowhere in the repository — a leftover from
