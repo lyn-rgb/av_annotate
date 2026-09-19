@@ -416,6 +416,33 @@ fetch_checkpoint() {
 # `cache_dir` is fixed to match what the closing note tells the operator to set
 # MODELSCOPE_CACHE to.  If those two disagree, the download lands somewhere
 # nothing reads and the first run pays for it again.
+# One file out of a ModelScope repo, for a checkpoint that only exists inside
+# somebody's upload of a whole project.  PANNs' Cnn14 is one: the ModelScope
+# copy sits beside fifteen other PANNs checkpoints, and fetching the repo to
+# get one file would pull three gigabytes of them.
+ms_file() {
+    local repo="$1" path="$2" dest="$3" floor="$4" why="$5"
+    printf '   %-46s ' "$(basename "$dest")"
+    if [[ -f "$dest" ]] && (( $(wc -c < "$dest") >= floor )); then
+        echo "already there ($why)"
+        return 0
+    fi
+    mkdir -p "$(dirname "$dest")"
+    local encoded url
+    encoded="$("$PYTHON" -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$path")"
+    url="https://www.modelscope.cn/api/v1/models/$repo/repo?Revision=master&FilePath=$encoded"
+    # --noproxy, like ms_fetch: a domestic host reached directly.  Resumed and
+    # size-checked like every other fetch here.
+    if curl -fsSL -C - --retry 3 --retry-delay 2 --connect-timeout 30 --noproxy '*' \
+        -o "$dest" "$url" 2>/dev/null && (( $(wc -c < "$dest") >= floor )); then
+        echo "ok   ($why, from ModelScope)"
+        return 0
+    fi
+    rm -f "$dest"
+    echo "FAIL ($why, from ModelScope)"
+    return 1
+}
+
 fetch_modelscope_native() {
     local repo="$1" why="$2"
     printf '   %-46s ' "$repo"
@@ -466,10 +493,27 @@ fetch_url() {
 
 if wants s1-faces; then
     say "S1: face detection"
-    note "buffalo_l and YuNet live on GitHub releases; if this machine cannot"
-    note "reach GitHub, carry them in a bundle instead (setup_server.sh --from-bundle)."
-    fetch_url "https://github.com/deepinsight/insightface/releases/download/model-zoo/buffalo_l.zip" \
-        "$MODELS/insightface/models/buffalo_l.zip" 10000000 "insightface identity vectors"
+    # buffalo_l is a GitHub release asset, and GitHub is the thing most often
+    # unreachable -- so a ModelScope upload of the same pack is tried first.
+    #
+    # It lands as an extracted directory rather than a zip, which is not a
+    # workaround: insightface checks for <root>/models/buffalo_l/ before it
+    # looks for the archive, so the directory is the state it actually wants and
+    # the unzip step disappears with it.
+    #
+    # The pack is a community upload, so it is worth saying what backs it: two
+    # independent uploads (SiYuan044, muse) carry the same five files at the
+    # same byte sizes, which is the most that can be checked without the
+    # original to compare against.  S1 loads it into insightface, and a wrong
+    # pack fails there rather than producing plausible nonsense.
+    if ms_fetch "SiYuan044/buffalo_l" dir "$MODELS/insightface/models/buffalo_l" \
+        "insightface identity vectors"; then
+        :
+    else
+        note "       (falling back to the GitHub release)"
+        fetch_url "https://github.com/deepinsight/insightface/releases/download/model-zoo/buffalo_l.zip" \
+            "$MODELS/insightface/models/buffalo_l.zip" 10000000 "insightface identity vectors"
+    fi
     fetch_url "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx" \
         "$MODELS/yunet.onnx" 100000 "YuNet"
 fi
@@ -480,9 +524,23 @@ fi
 
 if wants s4-diarize; then
     say "S4: diarization"
-    # Not on ModelScope under any name; this one needs the mirror, and the
-    # mirror needs a network that can reach Japan.
-    fetch_hf "BUT-FIT/diarizen-wavlm-large-s80-md-v2" "the checkpoint"
+    # BUT-FIT publishes on Hugging Face only, and there is no ModelScope mirror
+    # under that name -- but a community upload carries the same checkpoint, so
+    # it is filed under the id DiariZen asks for and the loader cannot tell the
+    # difference.  What backs it being the right checkpoint: config.toml is
+    # DiariZen's own schema, declares the same model class
+    # (diarizen.models.eend.model_wavlm_conformer.Model), and names
+    # wavlm_src = "wavlm_large_s80_md" -- the s80-md of the repo id.
+    #
+    # The upload also carries DiariZen-main.zip, which is the repository itself
+    # and is exactly what setup_server.sh cannot clone from here.
+    if ms_fetch "lvzepeng4youcash/DiariZen" cache "$HUB" "the checkpoint" \
+        "BUT-FIT/diarizen-wavlm-large-s80-md-v2"; then
+        :
+    else
+        note "       (falling back to the Hugging Face mirror)"
+        fetch_hf "BUT-FIT/diarizen-wavlm-large-s80-md-v2" "the checkpoint"
+    fi
     # Pulled by DiariZen's own code alongside the checkpoint, so it is easy to
     # miss when counting what has to be available offline.
     fetch_checkpoint "pyannote/wespeaker-voxceleb-resnet34-LM" "its embedding model"
@@ -592,10 +650,30 @@ if wants s9-paralinguistic; then
     fetch_checkpoint "openai/whisper-small" "delivery, processor only" \
         "openai-mirror/whisper-small"
 
-    # Zenodo, which is abroad like everything else that is not ModelScope.
-    fetch_url "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1" \
-        "$MODELS/panns/Cnn14_mAP=0.431.pth" 100000000 "PANNs events"
-    note "PANNs also downloads its AudioSet label list on import, into ~/panns_data"
+    # Zenodo, which is abroad like everything else that is not ModelScope --
+    # and a ModelScope upload carries the same file, beside fifteen other PANNs
+    # checkpoints, so it is taken one file at a time rather than by the repo.
+    if ms_file "pengzhendong/panns" "Cnn14_mAP=0.431.pth" \
+        "$MODELS/panns/Cnn14_mAP=0.431.pth" 100000000 "PANNs events"; then
+        note "       point configs/s9.paralinguistic.json's \"checkpoint\" at it:"
+        note "         \"../models/panns/Cnn14_mAP=0.431.pth\""
+    else
+        note "       (falling back to Zenodo)"
+        fetch_url "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1" \
+            "$MODELS/panns/Cnn14_mAP=0.431.pth" 100000000 "PANNs events"
+    fi
+    # panns_inference fetches this one itself, from Google Cloud Storage, with
+    # os.system("wget ...") -- no error if wget is missing, and no route to
+    # storage.googleapis.com from most of the networks this script is for.  It
+    # is the same CSV the ModelScope upload carries.
+    LABELS="$HOME/panns_data/class_labels_indices.csv"
+    if [[ -f "$LABELS" ]]; then
+        note "the AudioSet label list is already at $LABELS"
+    else
+        ms_file "pengzhendong/panns" "class_labels_indices.csv" "$LABELS" 10000 \
+            "the AudioSet label list" \
+            || warn "PANNs will try to wget its label list from Google on first use"
+    fi
 fi
 
 # --------------------------------------------------------------------------- #

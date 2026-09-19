@@ -17,10 +17,13 @@ domestic, carries most of these checkpoints under the same repo ids, and is
 reachable on precisely the networks where the mirror is not. Where ModelScope
 has no copy, the mirror is still tried.
 
-What is left needing a route abroad either way:
-`BUT-FIT/diarizen-wavlm-large-s80-md-v2` (S4) and PANNs' `Cnn14` (S9 events, on
-Zenodo). Everything else comes from ModelScope, including S7's ClearerVoice
-checkpoint and S10's captioning model.
+**Every checkpoint now comes from ModelScope**, including the three whose home
+is abroad and which used to need a route out: insightface's `buffalo_l` (a
+GitHub release), DiariZen's checkpoint (Hugging Face only), and PANNs' `Cnn14`
+(Zenodo). The last two arrive from community uploads, which is worth being
+precise about — see the notes on each below. The GitHub URLs are still tried
+first where they are the canonical source, so a machine that can reach GitHub
+is unaffected.
 
 `HF_ENDPOINT` still matters when the mirror *is* used, because it is honoured by
 every library using `huggingface_hub` — including ClearerVoice and
@@ -73,6 +76,47 @@ ln -s /path/to/models/clearvoice/AV_MossFormer2_TSE_16K \
 
 It skips the download entirely when `checkpoint_dir/last_best_checkpoint` is
 present, which is why nothing needs to reach Hugging Face once that is in place.
+
+### The three community uploads, and what was checked
+
+`buffalo_l`, DiariZen's checkpoint and PANNs' `Cnn14` are not published on
+ModelScope by their authors — they arrive from user uploads. So each was checked
+against something outside the upload rather than trusted because it downloaded
+without complaint.
+
+**`buffalo_l`** (`SiYuan044/buffalo_l`, cross-checked against
+`muse/insightface_model_buffalo_l`). Two unrelated uploads carry the same five
+files at the same byte sizes. Then it was loaded into insightface and run on a
+frame from `data/examples/`: 2 faces detected, 512-d embeddings, working
+`gender`/`age` attributes. That exercises the SCRFD detector, the ArcFace
+recognition model and the genderage model, so all three are real.
+
+**PANNs `Cnn14`** (`pengzhendong/panns`, whose repo holds sixteen PANNs
+checkpoints — which is why the one file is taken by name, not by repo). Loaded
+with `panns_inference` and run on three seconds of an example video: 2048-d
+embedding, top labels `Speech 0.87`, `Music 0.82`, `Male speech, man speaking`.
+Coherent AudioSet output, so these are trained weights rather than a renamed
+file.
+
+**DiariZen** (`lvzepeng4youcash/DiariZen`). This one could not be run — running
+it means executing code from the same upload. What was checked instead is that
+the checkpoint is consistent with the architecture its own `config.toml`
+declares: 24 transformer layers matching `WAVLM_LARGE_S80_MD`,
+`encoder_embed_dim` 1024, `weight_sum` of shape (1, 25) for
+`wavlm_layer_num = 25`, `proj` (256, 1024), and `conformer_layer.0..3` for
+`num_layer = 4`. Every one matches, and `config.toml` is DiariZen's own schema,
+naming `wavlm_src = "wavlm_large_s80_md"` — the `s80-md` of the repo id the
+configs ask for.
+
+What that does **not** establish: the upload is labelled `DiariZen`, not
+`...-v2`, and two training runs can share an architecture exactly. So it will
+load and run, and it may be v1 rather than v2. If diarization quality looks
+wrong against a known-good run, that is the first thing to suspect; the fix is
+the Hugging Face original, once there is a route to it.
+
+That upload also carries `DiariZen-main.zip`, which is the repository itself --
+the thing `setup_server.sh` clones from GitHub, and therefore cannot get on the
+network this whole path exists for.
 
 **If the server cannot reach github.com, start with the bundle instead.** More
 depends on GitHub than this repository's own three URLs: insightface fetches
