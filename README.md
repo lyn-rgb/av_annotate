@@ -48,6 +48,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/matching.py` | assignment and box-overlap primitives |
 | `avannotate/audio/` | diarization turns and their geometry |
 | `avannotate/asd/` | windowing, face crops, and prediction stitching |
+| `avannotate/tse/` | segment planning, the face-track crop video, the extractor |
 | `avannotate/stages/base.py` | contexts, artifacts, and the resume record |
 | `avannotate/stages/s0_preprocess.py` | S0 — probe, demux, shot boundaries |
 | `avannotate/stages/s1_faces.py` | S1 — face detection and identity vectors |
@@ -56,6 +57,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s4_diarize.py` | S4 — who spoke when |
 | `avannotate/stages/s5_asd.py` | S5 — which face is talking |
 | `avannotate/stages/s6_associate.py` | S6 — which face each speaker is |
+| `avannotate/stages/s7_tse.py` | S7 — one person's voice, one file per segment |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -65,17 +67,18 @@ what makes it testable without a model or a GPU.
 
 Implemented and tested: **S0 (probe, audio, shots)**, **S1 (detection +
 embeddings)**, **S2 (tracking)**, **S3 (identity clustering)**, **S4
-(diarization)**, **S5 (active speaker detection)** and **S6 (association)**,
-plus the deliverable format, segmentation, and the QA gates. 407 tests.
+(diarization)**, **S5 (active speaker detection)**, **S6 (association)** and
+**S7 (target-speaker extraction)**, plus the deliverable format, segmentation,
+and the QA gates. 443 tests.
 
-Not yet implemented: S7–S11 — target-speaker extraction, ASR, paralinguistic
-tagging, captioning, and the compose step — plus the batch driver. See the plan
-for the stage DAG and model choices.
+Not yet implemented: S8–S11 — ASR, paralinguistic tagging, captioning, and the
+compose step — plus the batch driver. See the plan for the stage DAG and model
+choices.
 
-**S4 and S5 need GPUs and packages that are not installed here.** Their model
-adapters are written against documented interfaces and could not be run; each
-names in its own docstring what to verify first. Everything that decides what
-goes into a model pass, and what its output means, is separate, pure, and
+**S4, S5 and S7 need GPUs and packages that are not installed here.** Their
+model adapters are written against documented interfaces and could not be run;
+each names in its own docstring what to verify first. Everything that decides
+what goes into a model pass, and what its output means, is separate, pure, and
 tested.
 
 ### Running it
@@ -94,6 +97,8 @@ avannotate run --stage s5-asd     --input data/examples.txt --output ./outputs \
     --config configs/s5.loconet.json
 avannotate run --stage s6-associate --input data/examples.txt --output ./outputs \
     --config configs/s6.associate.json
+avannotate run --stage s7-tse     --input data/examples.txt --output ./outputs \
+    --config configs/s7.clearvoice.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -144,6 +149,38 @@ Three outcomes are first-class rather than errors:
 - **An assignment can be ambiguous** (`ambiguous`). Two faces explain a speaker
   comparably well; the best guess is still reported, with its margin, because a
   reviewer wants the competition as well as the answer.
+
+### S7 hands the extractor a video with one face in it
+
+`AV_MossFormer2_TSE_16K` is face-conditioned, which is why it was chosen: a
+voice-conditioned extractor needs a clean enrolment clip, and producing those is
+what S7 is for. But its public API takes a video path and then runs *its own*
+face detection and lip-motion scoring to pick the speaker. There is no bbox
+argument. Asking it for F001 and getting F002 is a real possibility.
+
+So the choice is made before the model sees anything: cut a video containing only
+F001's face, following the track S2 built and S3 clustered, and hand that over.
+With one candidate it cannot pick wrong. The crop is square at 224 px with 40%
+margin, the way the model's own training preprocessing expands a face, and a
+frame where the track has no detection becomes a black tile rather than being
+dropped — the sequence has to stay aligned with the audio.
+
+Three consequences worth stating:
+
+- **Cost tracks speaking time, not screen time.** Extraction runs per segment, so
+  a person on screen for a minute and talking for five seconds costs five
+  seconds.
+- **Each segment gets 0.5 s of context on each side**, then has it trimmed back
+  off. A crop starting exactly at the first phoneme starts with a mouth already
+  moving, and the model has no baseline to compare against.
+- **The crop videos are deleted unless `keep_crops` is set.** A thousand segments
+  is a hundred thousand files, and they are a debugging aid rather than an
+  artifact.
+
+An identity S3 dropped but S6 still assigned speech to is reported under
+`skipped` with its reason, not silently omitted — the count of people with audio
+and the count of people in the annotation have to be reconcilable by whoever
+reads `summary.json`.
 
 ### What S1 will not do
 

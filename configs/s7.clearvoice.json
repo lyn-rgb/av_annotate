@@ -1,0 +1,13 @@
+{
+  "backend": "clearvoice",
+  "model": "AV_MossFormer2_TSE_16K",
+  "device": null,
+  "max_gap": 0.20,
+  "min_duration": 0.30,
+  "low_confidence_duration": 0.50,
+  "pad": 0.05,
+  "crop_size": 224,
+  "margin": 0.40,
+  "context_seconds": 0.5,
+  "keep_crops": false
+}

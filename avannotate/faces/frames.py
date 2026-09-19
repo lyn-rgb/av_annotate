@@ -143,15 +143,32 @@ def iter_frames(
 def iter_gray_window(
     source: Path, *, width: int, height: int, start_time: float, count: int
 ) -> Iterator[Frame]:
-    """Decode ``count`` consecutive frames from ``start_time``, as greyscale.
+    """Decode ``count`` consecutive grey frames from ``start_time``."""
 
-    One seek for the whole run rather than one per frame: ASD needs every frame
-    in a window, and :func:`read_frame`'s per-call seek would dominate the
-    stage's runtime.
+    return iter_window_frames(
+        source, width=width, height=height, start_time=start_time, count=count, gray=True
+    )
 
-    Greyscale because that is what every model in this family consumes -- asking
-    ffmpeg for ``gray`` moves a third of the bytes over the pipe and skips a
-    conversion nothing needs.
+
+def iter_window_frames(
+    source: Path,
+    *,
+    width: int,
+    height: int,
+    start_time: float,
+    count: int,
+    gray: bool = False,
+) -> Iterator[Frame]:
+    """Decode ``count`` consecutive frames from ``start_time``.
+
+    One seek for the whole run rather than one per frame: both consumers need
+    every frame in a range, and :func:`read_frame`'s per-call seek would
+    dominate their runtime.
+
+    ``gray`` asks ffmpeg for the single-channel format directly, which moves a
+    third of the bytes over the pipe and skips a conversion nothing needs.  The
+    ASD stages want greyscale; the extractor's visual encoder was trained on
+    colour and wants ``rgb24``.
     """
 
     if count < 0:
@@ -159,7 +176,8 @@ def iter_gray_window(
     if count == 0:
         return
 
-    frame_bytes = width * height
+    channels = 1 if gray else _CHANNELS
+    frame_bytes = width * height * channels
     if frame_bytes <= 0:
         raise ValueError(f"invalid frame size {width}x{height}")
 
@@ -182,7 +200,7 @@ def iter_gray_window(
             "-f",
             "rawvideo",
             "-pix_fmt",
-            "gray",
+            "gray" if gray else "rgb24",
             "-",
         ],
         stdout=subprocess.PIPE,
@@ -201,7 +219,8 @@ def iter_gray_window(
             chunk = process.stdout.read(frame_bytes)
             if len(chunk) < frame_bytes:
                 break
-            yield np.frombuffer(chunk, dtype=np.uint8).reshape(height, width).copy()
+            shape = (height, width) if gray else (height, width, channels)
+            yield np.frombuffer(chunk, dtype=np.uint8).reshape(shape).copy()
             produced += 1
     finally:
         process.stdout.close()

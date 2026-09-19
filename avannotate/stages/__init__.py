@@ -19,6 +19,7 @@ from avannotate.stages import (
     s4_diarize,
     s5_asd,
     s6_associate,
+    s7_tse,
 )
 from avannotate.stages.base import StageContext, StageRun
 
@@ -32,8 +33,8 @@ class Stage(Protocol):
     def run(self, context: StageContext, *, force: bool = False) -> StageRun: ...
 
 
-#: Ordered by dependency.  S0 is the only one implemented; the rest are named
-#: here so the CLI can report them as known-but-absent rather than unknown.
+#: Ordered by dependency.  Everything up to S7 is implemented; the rest are
+#: named here so the CLI can report them as known-but-absent, not unknown.
 STAGE_ORDER: tuple[str, ...] = (
     "s0-preprocess",
     "s1-faces",
@@ -57,6 +58,7 @@ _MODULES: dict[str, ModuleType] = {
     s4_diarize.STAGE: s4_diarize,
     s5_asd.STAGE: s5_asd,
     s6_associate.STAGE: s6_associate,
+    s7_tse.STAGE: s7_tse,
 }
 
 

@@ -104,6 +104,50 @@ saved sample without re-running anything else. The cheapest check is to run S5
 on a clip where one person speaks and another is visibly silent, and look at
 whether the two traces separate.
 
+## ClearerVoice
+
+```bash
+pip install clearvoice
+```
+
+No clone and no manual weight download: importing it fetches
+`AV_MossFormer2_TSE_16K` from Hugging Face on first use, so the first run needs
+network access. Point `HF_HOME` at a shared cache if several jobs run at once.
+
+### What to verify on the first run
+
+The adapter in `avannotate/tse/model.py` is written against the call shown in
+ClearerVoice's README:
+
+```python
+model = ClearVoice(task="target_speaker_extraction",
+                   model_names=["AV_MossFormer2_TSE_16K"])
+model(input_path="clip.mp4", online_write=True, output_path="out_dir")
+```
+
+Two details of that call could not be checked here, and they are why the adapter
+keeps its call in a layer of its own:
+
+1. **The produced file's name.** `ClearerVoiceExtractor.extract` lists the output
+   directory before and after the call and takes what appeared, rather than
+   predicting a name from the input. If the package derives that name from the
+   input path, predicting it would have meant writing to a path this code had
+   guessed.
+2. **Whether `output_path` is a directory or a file prefix.** Both fit the
+   signature; only one puts a file in the directory that was just scanned. If
+   `extract` raises saying nothing was written, this is why.
+
+There is also a **reported audio-offset bug** (their issue #160): when the
+speaker appears later than the video's start, the output is said to begin at
+frame 0. Every crop this pipeline writes starts with the target already on
+screen, so it should not apply — but it would present as a constant shift, which
+is why each segment's own `start` and `duration` are recorded next to its file.
+
+A cheap end-to-end check before trusting a batch: run S7 with `keep_crops` set in
+the config, open one `crops/F001_0000.mp4`, and confirm it holds exactly one face
+and that the face is the right person's. That is the entire workaround, so it is
+the one thing worth looking at with your own eyes.
+
 ## Running the pipeline
 
 ```bash
@@ -118,6 +162,10 @@ avannotate run --stage s4-diarize   --input videos.txt --output ./outputs \
     --config configs/s4.diarizen.json
 avannotate run --stage s5-asd       --input videos.txt --output ./outputs \
     --config configs/s5.loconet.json
+avannotate run --stage s6-associate --input videos.txt --output ./outputs \
+    --config configs/s6.associate.json
+avannotate run --stage s7-tse       --input videos.txt --output ./outputs \
+    --config configs/s7.clearvoice.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -135,6 +183,7 @@ Measured here, on CPU, over 26 seconds of video across three clips:
 | S3 | <1s | pure Python |
 | S4 (DiariZen) | not measured here | GPU; the WavLM front end is the cost |
 | S5 (LoCoNet) | not measured here | GPU; one pass per target per window |
+| S7 (ClearerVoice) | not measured here | GPU; scales with speaking time, not screen time |
 
 S1 dominates and is what to profile first on real hardware. `embedding_interval_seconds`
 changes only disk, not runtime: insightface computes the vector as part of its
