@@ -44,22 +44,46 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/segment.py` | S10 — silence-free utterance spans |
 | `avannotate/qa.py` | hard gates and reported metrics |
 | `avannotate/ffmpeg.py` | ffprobe, audio demux, and the shot detector |
+| `avannotate/faces/` | detection, frame decoding, box geometry |
 | `avannotate/stages/base.py` | contexts, artifacts, and the resume record |
 | `avannotate/stages/s0_preprocess.py` | S0 — probe, demux, shot boundaries |
+| `avannotate/stages/s1_faces.py` | S1 — face detection |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
-Everything except the model-backed stages is pure Python over JSON and needs no
-GPU, which is what makes it testable without one.
+Everything except the detector call itself is pure Python over JSON, which is
+what makes it testable without a model or a GPU.
 
 ## Status
 
-Implemented and tested: **S0 (probe, audio, shots)**, the deliverable format,
-face/speaker assignment, segmentation, and the QA gates. 159 tests.
+Implemented and tested: **S0 (probe, audio, shots)** and **S1 (face detection)**,
+plus the deliverable format, face/speaker assignment, segmentation, and the QA
+gates. 190 tests.
 
-Not yet implemented: S1–S11 — face detection and tracking, clustering,
-diarization, ASD, target-speaker extraction, ASR, paralinguistic tagging,
-captioning, and the compose step — plus the batch driver. See the plan for the
-stage DAG and model choices.
+Not yet implemented: S2–S11 — tracking, identity clustering, diarization, ASD,
+target-speaker extraction, ASR, paralinguistic tagging, captioning, and the
+compose step — plus the batch driver. See the plan for the stage DAG and model
+choices.
+
+### Running it
+
+```bash
+avannotate run --stage s0-preprocess --input data/examples.txt --output ./outputs
+avannotate run --stage s1-faces --input data/examples.txt --output ./outputs \
+    --config configs/s1.yunet.json
+```
+
+Every stage skips itself when its outputs are present and unchanged, so a rerun
+after a crash costs only the video that was in flight.
+
+### What S1 will not do
+
+It does not threshold detections away. A face detector finds faces in framed
+photographs and wall art — a gold record on a wall scored 0.64 across most of a
+sample clip here — and tracking will not filter those either, because a wall
+object is static and forms a long, stable, spurious track. The discriminator is
+that a real face moves and a wall object does not, and that signal only exists
+once there is a track. So S1 records the score and keeps everything, and the
+filtering happens with evidence.
 
 ### What S0 settles
 

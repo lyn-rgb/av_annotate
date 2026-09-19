@@ -25,9 +25,77 @@ from avannotate import __version__
 
 STATE_FILENAME = "stage_state.json"
 
+#: Key the CLI injects so a config can name a model or data file relative to
+#: itself.  Without it a config with ``"model_path": "models/yunet.onnx"``
+#: silently resolves against the working directory, and a batch launched from a
+#: different directory than the one it was tested in fails to find its weights.
+CONFIG_ROOT_KEY = "config_root"
+
 
 class StageError(RuntimeError):
     """A stage could not complete."""
+
+
+def config_int(mapping: Mapping[str, Any], key: str, default: int) -> int:
+    """Read an integer from a config mapping, tolerating JSON's numbers.
+
+    A config arrives as parsed JSON, so "3" and 3.0 are both plausible writings
+    of the same intent.  Anything else is a mistake worth raising on rather than
+    silently defaulting past.
+    """
+
+    value = mapping.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise StageError(f"config {key!r} must be a number, got a boolean")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (float, str)):
+        try:
+            return int(float(value))
+        except ValueError as error:
+            raise StageError(f"config {key!r} is not a number: {value!r}") from error
+    raise StageError(f"config {key!r} must be a number, got {type(value).__name__}")
+
+
+def config_float(mapping: Mapping[str, Any], key: str, default: float) -> float:
+    value = mapping.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise StageError(f"config {key!r} must be a number, got a boolean")
+    if isinstance(value, (int, float, str)):
+        try:
+            return float(value)
+        except ValueError as error:
+            raise StageError(f"config {key!r} is not a number: {value!r}") from error
+    raise StageError(f"config {key!r} must be a number, got {type(value).__name__}")
+
+
+def config_str(mapping: Mapping[str, Any], key: str, default: str) -> str:
+    value = mapping.get(key)
+    return default if value is None else str(value)
+
+
+def config_optional_str(mapping: Mapping[str, Any], key: str) -> str | None:
+    value = mapping.get(key)
+    return None if value is None else str(value)
+
+
+def resolve_config_path(value: str | Path, config: Mapping[str, Any]) -> Path:
+    """Resolve a path from a config against the config file's directory.
+
+    Normalised, so two configs naming the same file the same way hash equal and
+    a config moved to another directory does not silently point at a different
+    model while keeping its cache key.
+    """
+
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        root = config.get(CONFIG_ROOT_KEY)
+        path = (Path(str(root)) / path) if root is not None else path
+    return path.resolve()
 
 
 def hash_file(path: Path, *, chunk_size: int = 1 << 20) -> str:

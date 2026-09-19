@@ -67,9 +67,14 @@ def _read_inputs(value: str, *, base: Path) -> list[Path]:
 def _load_config(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
-    payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    resolved = path.expanduser().resolve()
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise SystemExit(f"config must be a JSON object: {path}")
+    from avannotate.stages.base import CONFIG_ROOT_KEY
+
+    payload.pop(CONFIG_ROOT_KEY, None)
+    payload[CONFIG_ROOT_KEY] = str(resolved.parent)
     return payload
 
 

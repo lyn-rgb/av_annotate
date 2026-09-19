@@ -28,3 +28,6 @@ data/examples/
 
 # macOS
 .DS_Store
+
+# Model weights are fetched, not committed.
+/models/

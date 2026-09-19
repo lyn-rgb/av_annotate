@@ -20,7 +20,8 @@ media = [
     "soundfile>=0.12",
 ]
 faces = [
-    "opencv-python>=4.9",
+    "numpy>=1.24",
+    "opencv-python-headless>=4.9",
     "insightface>=0.7",
     "onnxruntime-gpu>=1.17",
 ]

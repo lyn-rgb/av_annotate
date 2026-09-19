@@ -1,0 +1,6 @@
+{
+  "stride": 3,
+  "backend": "yunet",
+  "model_path": "../models/yunet.onnx",
+  "score_threshold": 0.6
+}
