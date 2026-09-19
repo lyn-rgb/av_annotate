@@ -1,0 +1,30 @@
+# Environment
+.venv/
+__pycache__/
+*.py[cod]
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Pipeline output. Stages write here; none of it is source.
+/outputs/
+/work/
+
+# Media is data, not source. The corpus is listed in data/examples.txt and lives
+# on the server; committing a copy would bloat the repo and go stale.
+data/examples/
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
+*.wav
+
+# Despite the name this is a ZIP of data/examples/, byte-identical to the
+# extracted files. Excluded so it is not committed twice; it is not a document.
+/data/README.md
+
+# macOS
+.DS_Store

@@ -1,0 +1,72 @@
+[project]
+name = "avannotate"
+version = "0.1.0"
+description = "Offline annotation pipeline: face tracks, per-person speech, transcripts and paralinguistic tags from multi-person video."
+# Tested on 3.10.15, which is what the development venv has.  Declaring 3.11
+# here would have claimed a floor nothing had ever been run against.
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+avannotate = "avannotate.cli:main"
+
+# Dependencies are grouped by stage so a server installs only what it runs.
+# The deterministic core (annotation rendering, association, segmentation, QA)
+# needs none of them -- it is pure Python over JSON, which is what makes it
+# testable without a GPU.
+[project.optional-dependencies]
+media = [
+    "numpy>=1.24",
+    "soundfile>=0.12",
+]
+faces = [
+    "opencv-python>=4.9",
+    "insightface>=0.7",
+    "onnxruntime-gpu>=1.17",
+]
+diarization = [
+    "torch>=2.1",
+    "pyannote.audio>=3.1",
+]
+asd = [
+    "torch>=2.1",
+]
+tse = [
+    "clearvoice",
+]
+asr = [
+    "faster-whisper>=1.0",
+]
+caption = [
+    "transformers>=4.51",
+    "accelerate>=0.30",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+    "mypy>=1.10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+# Must match `requires-python`; a higher target here makes ruff suggest
+# stdlib APIs the declared floor does not have.
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["avannotate"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["avannotate*"]
