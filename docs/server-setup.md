@@ -6,19 +6,73 @@ scripts/download_models.sh   # every model, into ./models
 avannotate doctor            # says what is still missing, and how to fix it
 ```
 
-Those three are the setup. **`download_models.sh` sends every Hugging Face
-request through `hf-mirror.com`** by setting `HF_ENDPOINT`, which is honoured by
+Those three are the setup. **`download_models.sh` tries ModelScope before the
+Hugging Face mirror**, and writes what it fetches into the layout
+`huggingface_hub` reads, so the repo ids in `configs/` keep resolving unchanged.
+
+Why that order: `hf-mirror.com` is not a way around a blocked network. It is
+itself abroad — it resolves to `160.16.86.14`, a Sakura address in Japan — so it
+is blocked by exactly the things that block `huggingface.co`. ModelScope is
+domestic, carries most of these checkpoints under the same repo ids, and is
+reachable on precisely the networks where the mirror is not. Where ModelScope
+has no copy, the mirror is still tried.
+
+What is left needing a route abroad either way:
+`BUT-FIT/diarizen-wavlm-large-s80-md-v2` (S4) and PANNs' `Cnn14` (S9 events, on
+Zenodo). Everything else comes from ModelScope, including S7's ClearerVoice
+checkpoint and S10's captioning model.
+
+`HF_ENDPOINT` still matters when the mirror *is* used, because it is honoured by
 every library using `huggingface_hub` — including ClearerVoice and
 faster-whisper, whose checkpoints are fetched by their own code rather than by
-anything here. Set the same two variables for a run:
+anything here. Set these for a run:
 
 ```bash
 export HF_HOME=/path/to/models/hf
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-If you would rather not rely on the mirror, the same variables accept any
-endpoint, including your own cache.
+**On a machine with no route abroad, add these two as well:**
+
+```bash
+export HF_HUB_OFFLINE=1
+export MODELSCOPE_CACHE=/path/to/models/modelscope
+```
+
+`HF_HUB_OFFLINE=1` is what makes a pre-fetched checkpoint actually get used.
+Without it, `from_pretrained` and `snapshot_download` still ask the network to
+resolve `main` before they consult the cache, so a machine with no route out
+fails on a checkpoint that is sitting right there on disk — which reads as the
+download never having happened. Set it only once the download has reported
+`ok`; with it set, nothing new can be fetched.
+
+`MODELSCOPE_CACHE` is where `funasr` looks for emotion2vec, and it has to match
+the path `download_models.sh` wrote into. Ordering matters for that one
+checkpoint: it is fetched with the `modelscope` package rather than over plain
+HTTP, so `pip install modelscope` has to come first, and the fetch is skipped —
+not failed — if it has not. Install the S9 packages and re-run the download if
+you want it carried rather than fetched on first use:
+
+```bash
+pip install funasr modelscope
+scripts/download_models.sh --only s9-paralinguistic
+```
+
+### S7 reads its checkpoint relative to the working directory
+
+Worth knowing before it bites: `clearvoice` hardcodes its checkpoint path as
+`checkpoint_dir/AV_MossFormer2_TSE_16K`, relative to wherever the process was
+started, and its public API takes no `checkpoint_dir` argument. So the run has
+to be pointed at what was downloaded:
+
+```bash
+mkdir -p checkpoint_dir
+ln -s /path/to/models/clearvoice/AV_MossFormer2_TSE_16K \
+      checkpoint_dir/AV_MossFormer2_TSE_16K
+```
+
+It skips the download entirely when `checkpoint_dir/last_best_checkpoint` is
+present, which is why nothing needs to reach Hugging Face once that is in place.
 
 **If the server cannot reach github.com, start with the bundle instead.** More
 depends on GitHub than this repository's own three URLs: insightface fetches

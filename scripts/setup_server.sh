@@ -87,6 +87,15 @@ mkdir -p "$MODELS"
 PIP_EXTRA=()
 if [[ -n "$BUNDLE" && -d "$BUNDLE/wheels" ]]; then
     PIP_EXTRA=(--no-index --find-links "$BUNDLE/wheels")
+else
+    # Which index to use is a property of the machine rather than of this
+    # project, so lib.sh probes for it: PyPI where it is reachable, a domestic
+    # mirror where it is not.  Without a bundle this is the only source of
+    # packages, and a machine that cannot reach GitHub usually cannot reach
+    # PyPI either.  `--index-url` is skipped entirely in the wheelhouse branch
+    # above, where `--no-index` is the whole point.
+    pip_index_args
+    PIP_EXTRA=(${PIP_INDEX_ARGS[@]+"${PIP_INDEX_ARGS[@]}"})
 fi
 
 # `"${arr[@]}"` on an empty array is an error under `set -u` on bash 3.2, which

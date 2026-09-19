@@ -40,3 +40,37 @@ configure_proxy() {
 }
 
 configure_proxy
+
+# Where pip is allowed to look.
+#
+# The same reasoning as the proxy above, one layer along.  A machine that cannot
+# reach GitHub is very often a machine that cannot reach PyPI either -- they are
+# both abroad, and they tend to be blocked together.  A domestic mirror is then
+# the difference between `pip install` working and a wheelhouse having to be
+# carried in by hand.
+#
+# Probed rather than guessed at, because the answer is a property of the machine
+# rather than of this project, and a hard-coded mirror is slow in the countries
+# where PyPI is fine.  `PIP_INDEX` overrides the probe -- set it when you know
+# something the probe cannot work out, such as an internal index.
+PIP_INDEX="${PIP_INDEX:-}"
+
+detect_pip_index() {
+    [[ -n "$PIP_INDEX" ]] && return 0
+    if curl -sS -o /dev/null --connect-timeout 5 --max-time 8 \
+        https://pypi.org/simple/ 2>/dev/null; then
+        PIP_INDEX="https://pypi.org/simple"
+    else
+        PIP_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
+    fi
+}
+
+# Fills PIP_INDEX_ARGS with the arguments pip should be given.  Set into an
+# array rather than printed, because these scripts still run on the bash 3.2
+# that ships as /bin/bash on macOS, and `mapfile` does not exist there.
+PIP_INDEX_ARGS=()
+
+pip_index_args() {
+    detect_pip_index
+    PIP_INDEX_ARGS=(--index-url "$PIP_INDEX")
+}
