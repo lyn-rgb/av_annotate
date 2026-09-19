@@ -329,11 +329,25 @@ def build_report(
     annotation: Annotation,
     *,
     vad_speech_seconds: float | None = None,
+    accounting_tolerance: float = DEFAULT_ACCOUNTING_TOLERANCE,
     notes: dict[str, object] | None = None,
 ) -> QaReport:
+    """Every gate, every metric, and whatever the caller wants to add.
+
+    ``accounting_tolerance`` is a parameter here rather than baked into the gate
+    because it is the one threshold that depends on the corpus rather than on
+    this code: a set with a lot of off-screen speech has a real gap between
+    attributed and heard speech, and a caller measuring that gap should be able
+    to see it without also reading a failure.
+    """
+
     return QaReport(
         video_id=annotation.video.video_id,
-        gates=run_gates(annotation, vad_speech_seconds=vad_speech_seconds),
+        gates=run_gates(
+            annotation,
+            vad_speech_seconds=vad_speech_seconds,
+            accounting_tolerance=accounting_tolerance,
+        ),
         metrics=compute_metrics(annotation),
         notes=notes or {},
     )

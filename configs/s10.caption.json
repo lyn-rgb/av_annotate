@@ -1,6 +1,6 @@
 {
   "backend": "qwen3-vl",
-  "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+  "model": "Qwen/Qwen3-VL-8B-Instruct",
   "device": null,
   "dtype": null,
   "device_map": null,

@@ -531,3 +531,95 @@ def annotation_from_dict(payload: dict[str, object]) -> Annotation:
         language=language,
         stats=stats,
     )
+
+
+def annotation_to_dict(annotation: Annotation) -> dict[str, object]:
+    """The JSON deliverable.
+
+    The inverse of :func:`annotation_from_dict` and kept beside it so the two
+    cannot drift: a field the writer renames and the reader does not is caught
+    by the round-trip test rather than by a consumer a month later.
+
+    Numbers are rounded rather than written at full precision.  A float that
+    came out of a division has seventeen significant digits, and a deliverable
+    where every timestamp differs in the last four is a diff nobody can read --
+    while four decimals of a second is a hundredth of a frame.
+    """
+
+    payload: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "video": {
+            "video_id": annotation.video.video_id,
+            "path": annotation.video.path,
+            "duration": round(annotation.video.duration, 4),
+            "fps": round(annotation.video.fps, 4),
+            "width": annotation.video.width,
+            "height": annotation.video.height,
+        },
+        "shots": [
+            {
+                "index": shot.index,
+                "start": round(shot.start, 4),
+                "end": round(shot.end, 4),
+                "caption": shot.caption,
+            }
+            for shot in annotation.shots
+        ],
+        "utterances": [
+            {
+                "face_id": item.face_id,
+                "start": round(item.start, 4),
+                "end": round(item.end, 4),
+                "text": item.text,
+                "tag": normalize_tag(item.tag),
+                "audio_path": item.audio_path,
+                "words": [
+                    {
+                        "text": word.text,
+                        "start": round(word.start, 4),
+                        "end": round(word.end, 4),
+                    }
+                    for word in item.words
+                ],
+                "confidence": (
+                    None if item.confidence is None else round(item.confidence, 4)
+                ),
+                "flags": list(item.flags),
+            }
+            for item in annotation.utterances
+        ],
+        "face_tracks": [
+            {
+                "face_id": track.face_id,
+                "first_seen": round(track.first_seen, 4),
+                "last_seen": round(track.last_seen, 4),
+                "speaks": track.speaks,
+                "total_speech": round(track.total_speech, 4),
+                "tracklets": list(track.tracklets),
+                "quality": {
+                    key: round(value, 4) for key, value in track.quality.items()
+                },
+            }
+            for track in annotation.face_tracks
+        ],
+        "global_caption": annotation.global_caption,
+    }
+
+    if annotation.language is not None:
+        payload["language"] = {
+            "code": annotation.language.code,
+            "confidence": (
+                None
+                if annotation.language.confidence is None
+                else round(annotation.language.confidence, 4)
+            ),
+            "source": annotation.language.source,
+        }
+    if annotation.stats:
+        payload["stats"] = dict(annotation.stats)
+
+    # Checked here rather than trusted: a producer writing a document its own
+    # reader rejects would fail at the far end of a batch, on the one video
+    # nobody is watching.
+    annotation_from_dict(payload)
+    return payload

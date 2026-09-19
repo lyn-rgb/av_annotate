@@ -40,8 +40,8 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/schema.py` | the deliverable's data contract |
 | `avannotate/annotation.py` | render and parse the script; round-trips exactly |
 | `avannotate/interval.py` | half-open time intervals and set operations |
-| `avannotate/associate.py` | S8 — which diarization speaker is which face |
-| `avannotate/segment.py` | S10 — silence-free utterance spans |
+| `avannotate/associate.py` | S6's matching algorithm, written before its inputs |
+| `avannotate/segment.py` | silence-free utterance spans, shared by S7–S9 |
 | `avannotate/qa.py` | hard gates and reported metrics |
 | `avannotate/ffmpeg.py` | ffprobe, audio demux, and the shot detector |
 | `avannotate/faces/` | detection, tracking, clustering, Kalman filter |
@@ -52,6 +52,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/asr/` | source routing, the language vote, words, the recogniser |
 | `avannotate/paralinguistic/` | the tag vocabulary, three models, one tag |
 | `avannotate/caption/` | frame planning, prompts, and the name check |
+| `avannotate/compose/` | ten stages' records into one document |
 | `avannotate/stages/base.py` | contexts, artifacts, and the resume record |
 | `avannotate/stages/s0_preprocess.py` | S0 — probe, demux, shot boundaries |
 | `avannotate/stages/s1_faces.py` | S1 — face detection and identity vectors |
@@ -64,6 +65,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s8_asr.py` | S8 — what each person said, and when |
 | `avannotate/stages/s9_paralinguistic.py` | S9 — how each line was said |
 | `avannotate/stages/s10_caption.py` | S10 — what the video and each shot look like |
+| `avannotate/stages/s11_compose.py` | S11 — the deliverable and its quality report |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -71,15 +73,16 @@ what makes it testable without a model or a GPU.
 
 ## Status
 
-Implemented and tested: **S0 (probe, audio, shots)**, **S1 (detection +
-embeddings)**, **S2 (tracking)**, **S3 (identity clustering)**, **S4
-(diarization)**, **S5 (active speaker detection)**, **S6 (association)**,
-**S7 (target-speaker extraction)**, **S8 (ASR)**, **S9 (paralinguistic
-tagging)** and **S10 (captioning)**, plus the deliverable format, segmentation,
-and the QA gates. 589 tests.
+All eleven stages are implemented and tested: **S0** (probe, audio, shots),
+**S1** (detection + embeddings), **S2** (tracking), **S3** (identity
+clustering), **S4** (diarization), **S5** (active speaker detection), **S6**
+(association), **S7** (target-speaker extraction), **S8** (ASR), **S9**
+(paralinguistic tagging), **S10** (captioning) and **S11** (compose) — plus the
+deliverable format, segmentation, and the QA gates. 611 tests.
 
-Not yet implemented: S11 (compose) and the batch driver. See the plan for the
-stage DAG and model choices.
+Not yet built: the **batch driver** that walks a corpus and isolates failures.
+Every stage is resumable on its own, so the driver is a loop around the CLI
+rather than new machinery — see the plan's M1.
 
 **S4, S5, S7, S8, S9 and S10 need GPUs and packages that are not installed
 here.** Their model adapters are written against documented interfaces and could
@@ -111,6 +114,8 @@ avannotate run --stage s9-paralinguistic --input data/examples.txt --output ./ou
     --config configs/s9.paralinguistic.json
 avannotate run --stage s10-caption --input data/examples.txt --output ./outputs \
     --config configs/s10.caption.json
+avannotate run --stage s11-compose --input data/examples.txt --output ./outputs \
+    --config configs/s11.compose.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -342,6 +347,60 @@ to fall, while one frame per shot covers every distinct scene the video contains
 It also does not caption from the audio. Both levels are visual only — the
 format's own example has no dialogue in either — which is what makes this stage
 independent of S4 through S9 and free to run on any schedule.
+
+### S11 joins on the segment name and nothing else
+
+Nine stages left records behind; S11 reads them all and writes `annotation.txt`,
+`annotation.json` and `qa/report.json`. It runs no model, which is the point:
+this is where a mistake becomes permanent, and it is also the stage with nothing
+in it that can fail unpredictably.
+
+Every join is on S7's segment name. S7 decided which spans exist and wrote one
+audio file for each; S8 transcribed those files, S9 tagged them, and S11 puts the
+three back together by name. Joining on a timestamp, an index or a sort order
+would be a second definition of what a segment is, and two definitions disagree
+on exactly the videos nobody checks.
+
+`annotation.json` is written by one function and read by another, so the writer
+checks its own output through the reader before returning it — a document this
+pipeline's own reader rejects would otherwise fail at the far end of a batch, on
+the one video nobody is watching.
+
+### The one real gap: speech from off camera
+
+**Nothing in this pipeline produces an utterance for a speaker who is not on
+screen.** An off-screen speaker has no face track by definition, S7 skips any
+identity without tracklets, and so no audio is extracted, nothing is transcribed,
+and no `F000` line reaches the deliverable. `F000` exists in the schema and the
+grammar reserves it; nothing currently writes it.
+
+This is not hidden: the speech-accounting gate compares what was attributed to
+what the diarizer heard, and for a video with off-camera speech that gate fails,
+with the size of the gap in the report. That is the gate doing its job — it is
+the measurement the plan asked for before deciding whether off-screen support is
+worth building, and it is far better read from a report than assumed either way.
+
+The one-line version: **run a small batch first and look at
+`qa/report.json`'s `speech_accounting` detail.** If the gaps are seconds, the
+corpus has narration and the off-screen branch is needed. If they are
+milliseconds, it does not.
+
+### What S11 will not hide
+
+The QA report is written whether the gates pass or fail, and the failing gate
+names are in the stage's own summary so a batch driver can route on them without
+parsing the report. A video that fails is flagged for review rather than dropped
+or passed quietly.
+
+### Where the deliverable's files actually are
+
+`annotation.json` sits beside the stage directories, and its `audio_path` fields
+point at the real extraction — `s7-tse/audio/F001/F001_0000.wav` — rather than at
+a flattened `audio/` tree. That is a deviation from the layout sketched in the
+plan, made because the alternative is either a second copy of every audio file or
+a set of symlinks, and because the path is *in* the JSON: a consumer following
+`audio_path` cannot be wrong about where a file is. The stage directories are the
+private working area, not a leak.
 
 ### What S1 will not do
 

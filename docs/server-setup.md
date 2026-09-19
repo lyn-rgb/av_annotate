@@ -306,40 +306,64 @@ needs to be stated precisely, because no source reconciles the discrepancy.
 pip install 'transformers>=4.57' torch
 ```
 
-The checkpoint is fetched from Hugging Face on first use. Nothing else is needed,
-and nothing else in this stage touches the audio chain — it reads shots and
-tracks and writes text.
+The checkpoint is fetched from Hugging Face on first use. `transformers` must be
+**4.57 or newer** — `qwen3_vl` does not exist before it. Nothing else in this
+stage touches the audio chain; it reads shots and tracks and writes text.
 
-### The memory arithmetic decides which checkpoint fits
+### The memory arithmetic does not leave an easy answer
 
-The 30B-class mixture-of-experts checkpoint is roughly **61 GB in bf16**, which
-does not fit a 48 GB card. Three ways out, in order of how much they cost you:
+Weight sizes published by Qwen, not estimated:
 
-| what | roughly | note |
+| checkpoint | size | loads in transformers? |
 | --- | --- | --- |
-| fp8 quantisation | ~31 GB | fits, closest to bf16 behaviour |
-| a 4-bit quantisation (AWQ/GPTQ) | ~17 GB | fits comfortably, some quality cost |
-| a smaller dense checkpoint | — | the fallback if either is unavailable |
+| `Qwen3-VL-30B-A3B-Instruct` (bf16) | **62.1 GB** | yes, but not on one 48 GB card |
+| `Qwen3-VL-30B-A3B-Instruct-FP8` | **32.3 GB** | **no** — the card says transformers cannot load it |
+| `Qwen3-VL-30B-A3B-Instruct-GGUF` (Q4_K_M) | **18.6 GB** | no — that is a llama.cpp format |
+| `Qwen3-VL-8B-Instruct` (bf16) | ~16 GB | yes, comfortably |
 
-Point `model` at whichever you choose; `dtype` and `device_map` are passed
-through to `from_pretrained`. The stage's own memory footprint is negligible
-next to this — a handful of stills at 448 px, per request.
+**The FP8 checkpoint is the trap.** It is the obvious fit — 32 GB on a 48 GB
+card, described by Qwen as nearly identical to bf16 — and its own model card
+says transformers cannot load those weights, directing you to vLLM or SGLang
+instead. There is no AWQ or GPTQ release for Qwen3-VL at all.
+
+So a single 48 GB card running this stage's adapter has two honest options:
+
+- **an 8B dense checkpoint** (`Qwen/Qwen3-VL-8B-Instruct`), which fits and works
+  with no extra machinery — the right default for a first batch;
+- **the 30B-A3B with `device_map="auto"`**, which will offload to host RAM and
+  run slowly. It works, and it is worth measuring before committing a corpus to
+  it.
+
+If the 30B's quality is needed at speed, that means serving it through vLLM and
+changing this adapter, which is a bigger decision than a config change.
+
+The stage's own footprint is negligible next to any of this: a handful of stills
+at 448 px, per request.
 
 ### What to verify on the first run
 
 1. **That the frames actually arrived.** Set `max_new_tokens` low and run one
-   video, then read `captions.json`. A caption that describes a generic room
-   rather than the one on screen means the images were dropped rather than
-   erroring, which is the failure this interface is most likely to have.
-2. **The image token budget.** `max_edge` (448 by default) is the lever on cost;
-   the processor may impose its own bounds on top. If captions are vague about
-   small objects, that is where to look first.
+   video, then read `captions.json`. A caption describing a generic room rather
+   than the one on screen means the images were dropped rather than erroring,
+   which is the failure this interface is most likely to have.
+2. **The image token budget.** `max_edge` (448 by default) is the lever: Qwen3-VL
+   spends one token per 32×32 pixels, so a 448 px frame is about 196 tokens and
+   eight of them about 1,600 per request. The checkpoint's own default allows
+   16,384 tokens *per image*, so leaving it in charge is expensive — the frame
+   size is what actually governs the cost here.
 3. **Whether the model obeys the identifier rule.** `summary.json`'s `dropped`
    count is how often it did not. A handful is expected; a large number means
    the prompt needs strengthening, not that the check is wrong.
-4. **`device_map` versus `device`.** They are alternatives — setting both is
-   ignored rather than combined, and `device_map="auto"` is usually what you
-   want for a quantised checkpoint that does not fit on one card.
+4. **`device_map` versus `device`.** They are alternatives — setting both means
+   `device_map` wins. `device_map="auto"` is what you want for a checkpoint that
+   does not fit on one card.
+
+Do **not** port `enable_thinking=False` from Qwen3 or Qwen2.5-VL code: Qwen3-VL
+has no such variable, and it is silently ignored with a warning. Which behaviour
+you get is decided by downloading `-Instruct` or `-Thinking`, and this stage
+wants `-Instruct`. `add_vision_id=True` is a real variable that labels each image
+("Picture 1: ...") and may help with many frames, but it also invites
+frame-by-frame description, which is the opposite of what a shot caption wants.
 
 ## Running the pipeline
 
@@ -365,7 +389,14 @@ avannotate run --stage s9-paralinguistic --input videos.txt --output ./outputs \
     --config configs/s9.paralinguistic.json
 avannotate run --stage s10-caption --input videos.txt --output ./outputs \
     --config configs/s10.caption.json
+avannotate run --stage s11-compose --input videos.txt --output ./outputs \
+    --config configs/s11.compose.json
 ```
+
+S11 needs nothing installed — it runs no model, reads JSON and writes text. It is
+also the stage to run on its own after any change to `annotation.py` or
+`compose/`: re-rendering a corpus costs seconds, where re-running anything that
+touches a GPU costs days.
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
 after a crash costs only the video that was in flight. `--force` overrides that.

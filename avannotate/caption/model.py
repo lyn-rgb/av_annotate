@@ -11,9 +11,29 @@ chosen exactly which frames represent a shot, and handing over a video would
 mean the model deciding where the shot starts -- the same division of labour as
 the other adapters in this pipeline, and for the same reason.
 
-**Not yet run against the real checkpoint.**  The call below is written against
-the model card's own example; see ``docs/server-setup.md`` for what to confirm
-and for the memory arithmetic that decides which checkpoint fits a 48 GB card.
+Reading the call
+----------------
+
+The interface was read off transformers 4.57 and the Qwen3-VL cards rather than
+recalled.  Three things about it are not what a reader would guess:
+
+* **It is two architectures under one name.**  The dense checkpoints load
+  through ``Qwen3VLForConditionalGeneration`` and the mixture-of-experts ones --
+  including the 30B-A3B this config names -- through
+  ``Qwen3VLMoeForConditionalGeneration``.  ``AutoModelForImageTextToText``
+  dispatches on the checkpoint's own config, which is why the auto class is used
+  here rather than either concrete one.
+* **Thinking is not a switch.**  Qwen3-VL has no ``enable_thinking`` argument --
+  that belongs to the text-only Qwen3 -- and passing it is a silent no-op with a
+  warning.  Whether a checkpoint reasons is decided by choosing ``-Instruct`` or
+  ``-Thinking`` when downloading, and this stage wants the former.
+* **The shipped image budget is very large** (16,384 tokens per image), so it is
+  the frame's own size that decides the cost here, not the processor's cap.  See
+  ``max_edge`` in the stage.
+
+**Not yet run against the real checkpoint.**  Anything behavioural -- whether it
+obeys the identifier rule, whether the captions are any good -- is unverified;
+see ``docs/server-setup.md``.
 """
 
 from __future__ import annotations
@@ -60,7 +80,7 @@ class Qwen3VLCaptioner:
     ) -> None:
         try:
             import torch
-            from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+            from transformers import AutoModelForImageTextToText, AutoProcessor
         except (ModuleNotFoundError, ImportError) as error:
             raise CaptionError(
                 "the captioning stage needs transformers and torch: pip install "
@@ -73,14 +93,21 @@ class Qwen3VLCaptioner:
         self._torch = torch
         self._processor = AutoProcessor.from_pretrained(model)
 
-        # ``dtype`` rather than the older ``torch_dtype``: the argument was
-        # renamed, and passing the old name is silently accepted by some
-        # versions and ignored by others, which turns a quantisation choice into
-        # an out-of-memory error an hour later.
+        # The auto class, and not either concrete one, because Qwen3-VL is two
+        # architectures behind one name: the dense checkpoints load through
+        # ``Qwen3VLForConditionalGeneration`` and the mixture-of-experts ones --
+        # including the 30B-A3B this config names -- through
+        # ``Qwen3VLMoeForConditionalGeneration``.  Naming one of them means the
+        # other cannot be swapped in without editing code, and naming the wrong
+        # one is a load failure at best.
+        #
+        # ``dtype`` rather than the older ``torch_dtype``, which is deprecated
+        # as of 4.57: it still works and warns, and passing both would let the
+        # deprecated one lose silently.
         kwargs: dict[str, Any] = {"dtype": dtype or "auto"}
         if device_map:
             kwargs["device_map"] = device_map
-        self._model = Qwen3VLForConditionalGeneration.from_pretrained(model, **kwargs)
+        self._model = AutoModelForImageTextToText.from_pretrained(model, **kwargs)
         if device and not device_map:
             self._model = self._model.to(torch.device(device))
         self._model.eval()
@@ -112,16 +139,26 @@ class Qwen3VLCaptioner:
         inputs = inputs.to(self._model.device)
 
         with self._torch.no_grad():
+            # Greedy, so the same frames give the same caption on every run.
+            # A sampled caption is a different dataset each time it is produced,
+            # and this one is meant to be a record.
             generated = self._model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=False,
+                **inputs, max_new_tokens=self.max_new_tokens, do_sample=False
             )
 
-        # Sliced from the prompt's length: these models are decoders, and the
-        # generated tensor contains the question as well as the answer.
-        answer = generated[:, inputs["input_ids"].shape[1] :]
-        text = self._processor.batch_decode(answer, skip_special_tokens=True)[0]
+        # The prompt is sliced off per example rather than by column, which is
+        # the card's own form: these are decoders, and what comes back contains
+        # the question as well as the answer.
+        trimmed = [
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs.input_ids, generated, strict=True)
+        ]
+        # ``clean_up_tokenization_spaces`` is off because the card says so: the
+        # cleanup rules assume English word spacing and mangle anything else,
+        # and this pipeline is explicitly multilingual.
+        text = self._processor.batch_decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]
         return str(text).strip()
 
 
