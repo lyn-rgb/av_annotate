@@ -170,14 +170,32 @@ print(m.load_report)"
 # -> {'missing': 0, 'unexpected': 0}
 ```
 
-**DiariZen** is the same shape of problem, and `DiariZen-main.zip` from the
-ModelScope upload is a usable stand-in — but not a perfect one. It carries the
-`diarizen/` package and the vendored `pyannote-audio/`, and is missing two
-things: `constraints.txt`, which `setup_server.sh` passes to pip for the
-vendored pyannote install (that step is already `|| warn`, so it degrades rather
-than fails), and the `dscore` submodule, which arrives as an empty directory.
-If `dscore` turns out to be needed at inference rather than only for scoring,
-that one needs a real clone.
+**DiariZen** comes from the same place, and the checkout is carried rather than
+cloned for the same reason. It is the `DiariZen-main` tree out of the ModelScope
+upload — which is the right one to use, and not merely the available one: the
+checkpoint came from that same upload, so the two are the same revision by
+construction. A separate `DiariZen` tree that is also on hand is a *different*
+revision (it carries extra multi-channel modules and its
+`model_wavlm_conformer.py` differs), and nothing has checked it against this
+checkpoint.
+
+Two things that look like gaps and are not:
+
+* `dscore/` is an empty directory. It is a git submodule that a tarball cannot
+  carry, and nothing needs it — it appears in neither `requirements.txt` nor
+  `pyproject.toml`, and no module under `diarizen/` imports it. It is the
+  scoring toolkit, used to *evaluate* diarization, not to run it.
+* `constraints.txt` is absent, and that is deliberate. It pins
+  `torch==2.1.1`/`torchaudio==2.1.1`, and `setup_server.sh` passes it as `-c` to
+  the vendored `pyannote-audio` install — where pip, resolving pyannote's own
+  torch dependency, would honour the pin and *downgrade* a working torch to get
+  there. Absent, that step falls through to its `|| warn`. `setup_venv.sh` does
+  not pass a constraints file at all.
+
+DiariZen's `pyproject.toml` declares no runtime dependencies at all (flit
+metadata and optional test/docs groups only), so `pip install -e .` alone
+installs nothing but the package — `requirements.txt` is what actually brings
+the dependencies, which is why both are installed.
 
 **If the server cannot reach github.com, start with the bundle instead.** More
 depends on GitHub than this repository's own three URLs: insightface fetches
