@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from avannotate.coercion import coerce_number
 from avannotate.faces.cluster import DEFAULT_MAX_DISTANCE, cluster_vectors
 from avannotate.faces.track import Tracklet, TrackQuality
 from avannotate.stages import s1_faces, s2_tracks
@@ -361,6 +362,24 @@ def load_identities(context: StageContext) -> tuple[dict[str, object], ...]:
     if not isinstance(raw, list):
         raise ValueError(f"{path} has no identities list; re-run {STAGE}")
     return tuple(item for item in raw if isinstance(item, dict))
+
+
+def load_identity_tracks(context: StageContext) -> dict[str, tuple[int, ...]]:
+    """``face_id -> its track_ids``, which is what the association stage needs.
+
+    A narrow accessor rather than handing the whole JSON around: S6 cares which
+    tracklets make up a person, and nothing else about how the person was
+    described.
+    """
+
+    members: dict[str, tuple[int, ...]] = {}
+    for identity in load_identities(context):
+        face_id = identity.get("face_id")
+        raw = identity.get("track_ids")
+        if not isinstance(face_id, str) or not isinstance(raw, list):
+            raise ValueError(f"malformed identity entry: {identity!r}")
+        members[face_id] = tuple(int(coerce_number(item, "track_id")) for item in raw)
+    return members
 
 
 def identities_path(context: StageContext) -> Path:

@@ -55,6 +55,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s3_cluster.py` | S3 — tracklets to numbered people |
 | `avannotate/stages/s4_diarize.py` | S4 — who spoke when |
 | `avannotate/stages/s5_asd.py` | S5 — which face is talking |
+| `avannotate/stages/s6_associate.py` | S6 — which face each speaker is |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -64,12 +65,12 @@ what makes it testable without a model or a GPU.
 
 Implemented and tested: **S0 (probe, audio, shots)**, **S1 (detection +
 embeddings)**, **S2 (tracking)**, **S3 (identity clustering)**, **S4
-(diarization)** and **S5 (active speaker detection)**, plus the deliverable
-format, face/speaker assignment, segmentation, and the QA gates. 388 tests.
+(diarization)**, **S5 (active speaker detection)** and **S6 (association)**,
+plus the deliverable format, segmentation, and the QA gates. 407 tests.
 
-Not yet implemented: S6–S11 — association, target-speaker extraction, ASR,
-paralinguistic tagging, captioning, and the compose step — plus the batch
-driver. See the plan for the stage DAG and model choices.
+Not yet implemented: S7–S11 — target-speaker extraction, ASR, paralinguistic
+tagging, captioning, and the compose step — plus the batch driver. See the plan
+for the stage DAG and model choices.
 
 **S4 and S5 need GPUs and packages that are not installed here.** Their model
 adapters are written against documented interfaces and could not be run; each
@@ -91,6 +92,8 @@ avannotate run --stage s4-diarize --input data/examples.txt --output ./outputs \
     --config configs/s4.diarizen.json
 avannotate run --stage s5-asd     --input data/examples.txt --output ./outputs \
     --config configs/s5.loconet.json
+avannotate run --stage s6-associate --input data/examples.txt --output ./outputs \
+    --config configs/s6.associate.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -120,6 +123,27 @@ and a one-frame tracklet has no appearance to match on. Measured:
 Two people is the right answer for all three. So on a corpus with camera motion,
 prefer `configs/s1.insightface.dense.json` (stride 1); the extra detection cost
 buys tracklets long enough to cluster.
+
+### S6 is where the three signals meet
+
+S3 produced people, S4 produced turn-taking, S5 produced per-frame evidence of
+who was talking; S6 decides who is who, and every stage after it reads that
+decision. The matching algorithm is in `avannotate/associate.py` and was written
+and tested before any of the stages that feed it existed -- S6 is the adaptation
+around it, plus the two things the rest of the pipeline needs from the result:
+each identity's speaking intervals, and the confidence that the assignment is
+right.
+
+Three outcomes are first-class rather than errors:
+
+- **A speaker can come out off-screen** (`F000`). A diarizer hears a voice and no
+  face matches it: narration, a phone call, someone out of frame.
+- **A speaker can share a face with another** (`merged`). That is diarization
+  over-segmentation -- one person split into two clusters -- and sending the
+  spare cluster off-screen would relabel real speech as narration.
+- **An assignment can be ambiguous** (`ambiguous`). Two faces explain a speaker
+  comparably well; the best guess is still reported, with its margin, because a
+  reviewer wants the competition as well as the answer.
 
 ### What S1 will not do
 

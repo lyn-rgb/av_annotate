@@ -1,0 +1,7 @@
+{
+  "min_score": 0.05,
+  "min_margin": 0.05,
+  "min_coverage": 0.25,
+  "contrast_penalty": 0.5,
+  "presence_gap_seconds": 0.5
+}

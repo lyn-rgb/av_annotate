@@ -19,13 +19,26 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from avannotate.coercion import coerce_number
 from avannotate.faces.kalman import KalmanFilter, Matrix, Vector
 from avannotate.faces.types import Detection, FrameDetections
+from avannotate.interval import Interval, intersect, merge
 from avannotate.matching import Box, iou_distance, linear_assignment
+
+if TYPE_CHECKING:
+    # Only for the annotation: importing the ASD package at runtime would pull
+    # numpy into a module the deterministic core depends on.
+    from avannotate.asd.types import Window
+
+
+#: A tracklet seen once contributes a span this long, so that a brief
+#: appearance can still be compared with others.  Zero-length spans never
+#: overlap, which would make every such tracklet look equally unrelated.
+_SINGLE_SIGHTING_SECONDS = 0.1
 
 
 class TrackState(Enum):
@@ -200,6 +213,40 @@ class Tracklet:
     @property
     def last_time(self) -> float:
         return self.detections[-1].time if self.detections else 0.0
+
+    def presence(self, *, max_gap: float = 0.0) -> tuple[Interval, ...]:
+        """The spans this face was on screen for.
+
+        A detection is a sighting, not an existence: between two of them the
+        face was there and the detector simply did not report it.  Spans
+        therefore run from one detection to the next, and the last is extended
+        by the median spacing between sightings -- the best available estimate
+        of how long this tracklet persists.
+
+        Defined here rather than in each consumer because ASD's context
+        selection and the association stage both need it, and two definitions
+        of "was this face present" would be two answers to the same question.
+        """
+
+        times = sorted(detection.time for detection in self.detections)
+        if not times:
+            return ()
+        if len(times) == 1:
+            return (Interval(times[0], times[0] + _SINGLE_SIGHTING_SECONDS),)
+
+        gaps = sorted(times[index + 1] - times[index] for index in range(len(times) - 1))
+        tail = gaps[len(gaps) // 2]
+        spans = [
+            Interval(times[index], times[index + 1]) for index in range(len(times) - 1)
+        ]
+        spans.append(Interval(times[-1], times[-1] + tail))
+        return merge(spans, max_gap=max_gap)
+
+    def presence_in(self, window: Window) -> tuple[Interval, ...]:
+        """That, restricted to a window.  Imported lazily to keep the layers
+        apart: a window is an ASD concept and the tracklet is not."""
+
+        return intersect(self.presence(), (window.interval,))
 
 
 @dataclass(frozen=True)

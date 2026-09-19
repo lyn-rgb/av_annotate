@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from avannotate.asd.types import Window
 from avannotate.faces.track import Tracklet
-from avannotate.interval import Interval, merge, overlap_duration
+from avannotate.interval import Interval, overlap_duration
 
 #: Frames per forward pass.  LoCoNet's ablation: 20 frames is worst, 100 gives
 #: about +5% mAP, 200 is the memory/accuracy balance, 400 does not fit.
@@ -109,42 +109,14 @@ def plan_windows(
     )
 
 
-#: A tracklet seen once contributes a span this long, so that a brief
-#: appearance can still be compared with others.  Zero-length spans never
-#: overlap, which would make every such tracklet look equally unrelated.
-_SINGLE_DETECTION_SECONDS = 0.1
-
-
 def activity(tracklet: Tracklet, window: Window) -> tuple[Interval, ...]:
     """The spans a tracklet is present for, inside one window.
 
-    A detection is an instant, not a span: the face is present from one
-    detection until the next.  Building the spans that way is what makes
-    "do these two overlap in time" a question with an answer -- treating each
-    detection as a zero-length interval makes every pair disjoint.
+    A thin wrapper over :meth:`Tracklet.presence_in`, so that "was this face
+    here" has one definition rather than one per consumer.
     """
 
-    times = sorted(
-        detection.time
-        for detection in tracklet.detections
-        if window.start <= detection.time < window.end
-    )
-    if not times:
-        return ()
-    if len(times) == 1:
-        return (Interval(times[0], times[0] + _SINGLE_DETECTION_SECONDS),)
-
-    # The last detection has no successor to bound it, so it is extended by the
-    # median spacing between detections -- the best available estimate of how
-    # long this tracklet persists between sightings.  Measured from the times
-    # rather than the spans: deriving it from span starts gives a different
-    # answer for two detections than for three at the same spacing.
-    gaps = sorted(times[index + 1] - times[index] for index in range(len(times) - 1))
-    tail = gaps[len(gaps) // 2]
-
-    spans = [Interval(times[index], times[index + 1]) for index in range(len(times) - 1)]
-    spans.append(Interval(times[-1], times[-1] + tail))
-    return merge(spans)
+    return tracklet.presence_in(window)
 
 
 def tracks_in_window(tracklets: Sequence[Tracklet], window: Window) -> tuple[int, ...]:
