@@ -66,6 +66,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s9_paralinguistic.py` | S9 — how each line was said |
 | `avannotate/stages/s10_caption.py` | S10 — what the video and each shot look like |
 | `avannotate/stages/s11_compose.py` | S11 — the deliverable and its quality report |
+| `avannotate/requirements.py` | what each stage needs from the machine |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -120,6 +121,24 @@ avannotate run --stage s11-compose --input data/examples.txt --output ./outputs 
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
 after a crash costs only the video that was in flight.
+
+### Before a batch: ask the machine what it has
+
+```bash
+avannotate doctor
+```
+
+Reports, per stage, whether this machine can run it — the packages, the
+checkouts and the weight files — and for anything missing, the command that
+fixes it. It resolves model paths the way the stages do, against the directory
+of the config that names them, so it cannot report a model missing that a run
+would have found.
+
+Two of the six models are research repositories rather than packages, and two
+need weights that no package fetches. `scripts/setup_server.sh` does the parts
+that can be automated and prints the exact commands for the two that cannot — a
+Google Drive link and a Zenodo download. Following the script and re-running
+`doctor` is the whole setup.
 
 **S3 needs insightface.** YuNet detects but produces no identity vectors, and S3
 refuses to guess rather than fragmenting every identity into a separate person.

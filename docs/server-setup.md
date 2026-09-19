@@ -1,8 +1,23 @@
 # Server setup
 
+```bash
+scripts/setup_server.sh      # clones, installs, fetches what it can
+avannotate doctor            # says what is still missing, and how to fix it
+```
+
+Those two are the setup. The rest of this document is the detail behind them:
+what each model needs, what could not be verified without a GPU, and what to
+check on the first run of each.
+
+`doctor` is the part worth knowing about. It reports per stage whether this
+machine can run it, resolves the model paths exactly as the stages resolve them
+— against the directory of the config file that names them — and never imports
+a module to check it, so it answers in a second rather than loading 60 GB of
+weights. Run it before a batch rather than discovering a missing package at
+video four hundred.
+
 The stages before S4 need nothing but ffmpeg, numpy, and OpenCV, and run
-anywhere. S4 needs DiariZen, which is not on PyPI and wants a GPU. This is the
-part that only runs on the server.
+anywhere. S4 needs DiariZen, which is not on PyPI and wants a GPU.
 
 ## DiariZen
 

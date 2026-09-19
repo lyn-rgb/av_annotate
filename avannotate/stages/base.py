@@ -83,6 +83,26 @@ def config_optional_str(mapping: Mapping[str, Any], key: str) -> str | None:
     return None if value is None else str(value)
 
 
+def load_config_file(path: Path) -> dict[str, Any]:
+    """A stage config, with its own directory recorded inside it.
+
+    The directory matters because a config names its model paths relative to
+    itself, so the same config file works from any working directory.  Loading
+    it is therefore not ``json.loads``: it is ``json.loads`` plus the one key
+    that makes every other key mean what it says.
+    """
+
+    import json
+
+    resolved = Path(path).expanduser().resolve()
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise StageError(f"config must be a JSON object: {resolved}")
+    payload.pop(CONFIG_ROOT_KEY, None)
+    payload[CONFIG_ROOT_KEY] = str(resolved.parent)
+    return payload
+
+
 def resolve_config_path(value: str | Path, config: Mapping[str, Any]) -> Path:
     """Resolve a path from a config against the config file's directory.
 

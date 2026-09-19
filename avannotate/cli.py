@@ -8,12 +8,12 @@ per-stage resume record, not the CLI, is what makes a rerun cheap.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
+from avannotate import requirements
 from avannotate.stages import STAGE_ORDER, available_stages, get_stage
-from avannotate.stages.base import StageContext, StageError
+from avannotate.stages.base import StageContext, StageError, load_config_file
 
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"})
 
@@ -67,21 +67,39 @@ def _read_inputs(value: str, *, base: Path) -> list[Path]:
 def _load_config(path: Path | None) -> dict[str, object]:
     if path is None:
         return {}
-    resolved = path.expanduser().resolve()
-    payload = json.loads(resolved.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise SystemExit(f"config must be a JSON object: {path}")
-    from avannotate.stages.base import CONFIG_ROOT_KEY
-
-    payload.pop(CONFIG_ROOT_KEY, None)
-    payload[CONFIG_ROOT_KEY] = str(resolved.parent)
-    return payload
+    return load_config_file(path)
 
 
 def _cmd_stages(_: argparse.Namespace) -> int:
     implementable = set(available_stages())
     for name in STAGE_ORDER:
         print(f"  {'implemented' if name in implementable else 'not yet    '}  {name}")
+    return 0
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Report what each stage needs that this machine does not have."""
+
+    stages = tuple(args.stage) if args.stage else available_stages()
+    unknown = [name for name in stages if name not in available_stages()]
+    if unknown:
+        raise SystemExit(f"unknown stage(s): {', '.join(unknown)}")
+
+    statuses = requirements.check(stages, configs_dir=args.configs_dir)
+
+    for status in statuses:
+        mark = "ready  " if status.ready else "MISSING"
+        print(f"{mark}  {status.stage:22} {status.detail}")
+        for item in status.todo:
+            print(f"         {item}")
+
+    missing = [status.stage for status in statuses if not status.ready]
+    if missing:
+        print()
+        print(f"{len(missing)} of {len(statuses)} stages cannot run here: {', '.join(missing)}")
+        return 1
+    print()
+    print(f"all {len(statuses)} stages can run here")
     return 0
 
 
@@ -122,6 +140,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     stages = subparsers.add_parser("stages", help="list the pipeline's stages")
     stages.set_defaults(handler=_cmd_stages)
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="report whether this machine can run each stage",
+        description=(
+            "Checks for the packages, checkouts and weights each stage needs, "
+            "so a missing one is found before a batch rather than during it."
+        ),
+    )
+    doctor.add_argument(
+        "--configs-dir",
+        type=Path,
+        default=Path("configs"),
+        help="where the stage config files live (default: ./configs)",
+    )
+    doctor.add_argument(
+        "--stage",
+        action="append",
+        help="check only this stage; repeatable. Default: every stage.",
+    )
+    doctor.set_defaults(handler=_cmd_doctor)
 
     run = subparsers.add_parser("run", help="run one stage over one or more videos")
     run.add_argument("--stage", required=True, help="stage name, e.g. s0-preprocess")
