@@ -37,6 +37,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# curl does not read the macOS system proxy; this does.  See lib.sh.
+# shellcheck source=lib.sh
+source "$ROOT/scripts/lib.sh"
 OUT="$ROOT/offline-bundle"
 WITH_WHEELS=0
 WITH_HF=0

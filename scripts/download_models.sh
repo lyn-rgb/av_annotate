@@ -30,6 +30,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# curl does not read the macOS system proxy; this does.  See lib.sh.
+# shellcheck source=lib.sh
+source "$ROOT/scripts/lib.sh"
 MODELS="$ROOT/models"
 ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 ONLY="all"
