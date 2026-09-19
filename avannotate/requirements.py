@@ -146,14 +146,13 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         config_file="s5.loconet.json",
         weights=("checkpoint",),
         weights_hint=CHECKPOINTS["loconet"],
-        # Deliberately does not claim this stage is ready once the boxes are
-        # ticked.  Its repository imports a module it does not contain, so a
-        # checkout alone is not enough and this check cannot tell -- it would
-        # have to import the thing, which is exactly what it must not do.
+        # A plain checkout really is enough -- verified by building the network
+        # from one.  The repository does contain an unimportable file
+        # (loconet.py wants a missing 'xxlib'), but it is the training harness
+        # and nothing here imports it.
         note=(
-            "checkout and checkpoint present -- but the repository does not import "
-            "as it stands (loconet.py needs a missing 'xxlib'); patch it or vendor "
-            "the model files. See docs/server-setup.md"
+            "checkout and checkpoint present; also needs resampy, and building the "
+            "model downloads 275 MB of VGGish weights it then overwrites"
         ),
     ),
     Requirement(

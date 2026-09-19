@@ -350,3 +350,95 @@ def test_stacking_leaves_the_pixels_in_the_range_the_model_expects() -> None:
 def test_track_speaking_round_trips() -> None:
     track = TrackSpeaking(track_id=3, samples=(SpeakingSample(0.0, 0.5),))
     assert TrackSpeaking.from_dict(track.to_dict()) == track
+
+
+# --------------------------------------------------------------------------- #
+# LoCoNet's fixed speaker axis, verified against the model's own source
+# --------------------------------------------------------------------------- #
+
+
+def test_the_speaker_axis_is_the_three_the_weights_bake_in() -> None:
+    """``ConvLayer`` builds ``Conv2d(256, 256*s, (s, 7))`` with s from the
+    config, so the axis is not a preference -- a different number cannot load
+    the released weights at all."""
+
+    from avannotate.asd.model import (
+        LOCO_NET_MAX_SPEAKERS,
+        LOCO_NET_NUM_SPEAKERS,
+        _loconet_config,
+    )
+
+    assert _loconet_config().MODEL.NUM_SPEAKERS == LOCO_NET_NUM_SPEAKERS
+    # The planner's cap and the model's axis have to be the same number: if the
+    # planner allowed a wider group, every such window would be rejected at
+    # scoring time -- and if it allowed a wider one than the model, silently.
+    assert LOCO_NET_MAX_SPEAKERS == LOCO_NET_NUM_SPEAKERS
+
+
+def test_the_config_carries_exactly_the_keys_the_network_reads() -> None:
+    """It takes a dlhammer config object; building one by hand is what keeps
+    dlhammer -- reachable only through the repository's PYTHONPATH dance --
+    out of this pipeline."""
+
+    from avannotate.asd.model import _loconet_config
+
+    model = _loconet_config().MODEL
+
+    assert set(model) == {"NUM_SPEAKERS", "AV_layers", "ADJUST_ATTENTION"}
+    assert model.AV_layers == 3
+    assert model.ADJUST_ATTENTION == 0
+
+
+def test_a_narrow_group_is_padded_with_black_tiles() -> None:
+    """A window with one person in it still has to be scored.
+
+    Black rather than grey because the model normalises its own input, so a zero
+    tile becomes the constant the repository's own loader produces for a speaker
+    with no face in frame -- the value the network was trained to read as
+    "nobody there".
+    """
+
+    from avannotate.asd.model import LOCO_NET_NUM_SPEAKERS, pad_speakers
+
+    crops = np.full((1, 4, 112, 112), 200.0, dtype=np.float32)
+    padded = pad_speakers(crops, width=LOCO_NET_NUM_SPEAKERS)
+
+    assert padded.shape == (LOCO_NET_NUM_SPEAKERS, 4, 112, 112)
+    # The target stays row 0, which is the only row the caller keeps.
+    assert float(padded[0].max()) == pytest.approx(200.0)
+    assert float(padded[1].max()) == 0.0
+    assert float(padded[2].max()) == 0.0
+
+
+def test_a_group_already_at_the_right_width_is_untouched() -> None:
+    from avannotate.asd.model import LOCO_NET_NUM_SPEAKERS, pad_speakers
+
+    crops = np.zeros((LOCO_NET_NUM_SPEAKERS, 4, 112, 112), dtype=np.float32)
+    assert pad_speakers(crops, width=LOCO_NET_NUM_SPEAKERS) is crops
+
+
+def test_too_many_speakers_is_an_error_not_a_truncation() -> None:
+    """Dropping a speaker would attribute whatever they did to somebody else."""
+
+    from avannotate.asd.model import LOCO_NET_NUM_SPEAKERS, pad_speakers
+
+    with pytest.raises(AsdError, match=f"holds {LOCO_NET_NUM_SPEAKERS} and this group has 4"):
+        pad_speakers(np.zeros((4, 4, 112, 112), np.float32), width=LOCO_NET_NUM_SPEAKERS)
+
+
+def test_the_crop_margin_is_zero_because_loconet_has_no_crop_scale() -> None:
+    """``cropScale = 0.40`` is TalkNet's and does not appear in LoCoNet's
+    repository at all; its loader resizes the detected box directly."""
+
+    from avannotate.asd.crop import DEFAULT_MARGIN
+
+    assert DEFAULT_MARGIN == 0.0
+
+
+def test_the_mel_band_count_is_vggishs_not_the_frontend_output() -> None:
+    """64 is the width of the audio frontend's first convolution; 128 is its
+    output width.  Feeding 128 bands to a 64-wide convolution does not fail."""
+
+    from avannotate.asd.model import _MEL_BINS
+
+    assert _MEL_BINS == 64

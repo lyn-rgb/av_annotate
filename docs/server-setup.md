@@ -86,71 +86,88 @@ of the pipeline depends on.
 
 ## LoCoNet
 
-> **This one does not work out of the box, and the reason is in the repository
-> rather than in this pipeline.** Read this section before planning a run.
+**This one works, and a plain clone is enough — verified by building the network
+and running a forward pass.** It is not a package, so it needs a checkout and a
+couple of things its own instructions omit:
 
 ```bash
-git clone https://github.com/SJTUwxz/LoCoNet_ASD     # or: scripts/setup_server.sh
+git clone https://github.com/SJTUwxz/LoCoNet_ASD      # or: scripts/setup_server.sh
+pip install resampy                                    # see below
 # then download loconet_AVA.model from the Google Drive link in its README
 ```
 
-### The repository cannot be imported as it stands
+### The three things nobody mentions
 
-`loconet.py` opens with `from xxlib.utils.distributed import all_gather`, and
-`xxlib` **exists nowhere in the repository** — a leftover from the authors'
-private training harness. So `import loconet` raises `ModuleNotFoundError`
-before anything else can go wrong. Two ways past it:
+1. **`resampy` is missing from its requirements.** Its in-tree `torchvggish`
+   imports it, so model construction fails with `ModuleNotFoundError: resampy`
+   and nothing in the repository warns you. It is in this project's `asd` extra.
 
-- **Patch that one line** in the checkout (it is only used by the training
-  paths, not by inference).
-- **Vendor the model files** into a directory of your own —
-  `model/loconet_encoder.py`, `model/visualEncoder.py`, `model/attentionLayer.py`,
-  `model/convLayer.py` and `loss_multi.py` — and point `repo` at it. The modules
-  import each other by flat name, so they have to travel together.
+2. **Building the model downloads 275 MB of VGGish weights** from
+   `github.com/harritaylor/torchvggish/releases`, at construction time, whether
+   or not it is useful — and it is not useful, because LoCoNet's own checkpoint
+   overwrites those weights a moment later. There is no argument to skip it
+   short of patching `model/loconet_encoder.py` to pass `pretrained=False`.
+   Pre-place it at `~/.cache/torch/hub/checkpoints/vggish-10086976.pth` on an
+   air-gapped machine.
 
-Note that **the weights have no declared licence**: there is no `LICENSE` at the
-repository root, and the only one anywhere covers the vendored `dlhammer`. The
-README says nothing about the weights. Fine for research use, but it is a
-compliance question rather than a technical one, and vendoring the code into
-another repository is a different act from cloning it.
+3. **`loconet.py` cannot be imported.** It does `from xxlib.utils.distributed
+   import ...` and `xxlib` exists nowhere in the repository — a leftover from
+   the authors' private training harness. That is the training script, not the
+   model, and **nothing here imports it**: the adapter needs
+   `model/loconet_encoder.py` and `loss_multi.py`, and both import cleanly from
+   a plain checkout. No patching, no vendoring.
 
-### What else about it is not what it looks like
+### What about it is not what it looks like
 
-All read off the source, and each was wrong when it was assumed:
+All read off the source and confirmed by running it. Each of the first four was
+wrong when it was assumed, and each would have failed quietly:
 
 - **There is no inference entry point.** `Loconet.forward(audioFeature,
   visualFeature, labels, masks)` dereferences `labels` and `masks` before any
   branch and returns a loss tuple — it cannot be called to score anything. The
   adapter drives the four frontends and the classifier head itself, which is
   what the repository's own `evaluate_network` does internally.
-- **The class is `locoencoder`**, not `LoCoNet` — that exact capitalisation
-  appears nowhere in the repository. The wrapper that shares the similar name
-  exists only to compute training losses, and it calls `.cuda()` unconditionally
-  in its constructor.
+- **The class is `locoencoder`**, not `LoCoNet` — that capitalisation appears
+  nowhere in the repository.
 - **The head is `lossAV.FC`**, a `Linear(256, 2)`, and its weights live in the
-  checkpoint rather than in the encoder. Scoring is `softmax(-1)[:, 1]`; there
-  is no sigmoid in this model.
+  checkpoint rather than in the encoder, under `model.module.model.lossAV.*`.
+  Scoring is `softmax(-1)[:, 1]`; there is no sigmoid in this model.
 - **`cropScale` is not in this repository.** That constant is TalkNet's. LoCoNet
   crops the detected box directly and resizes to 112×112 square, flattening the
   aspect ratio, so the margin here is **0.0** and was wrong at 0.40.
 - **The audio is `[4T, 64]`, not `[4T, 128]`.** 64 is VGGish's mel-band count;
-  128 is the *output* width of the audio frontend. Feeding 128 bands to a
-  64-wide first convolution does not fail, it convolves over nonsense.
+  128 is the *output* width of the audio frontend.
 - **Crops are 0..255.** The visual frontend normalises its own input,
   `(x / 255 - 0.4161) / 0.1688`, so dividing by 255 beforehand applies the shift
-  twice — every activation in the first layer wrong, with no error.
+  twice.
+
+### The speaker axis is exactly three
+
+`ConvLayer` builds `Conv2d(256, 256*s, (s, 7))` with `s = NUM_SPEAKERS` — the
+count is baked into the weight shapes — and it convolves *across* the speaker
+axis. So a group narrower than three has to be padded (the adapter pads with
+black tiles, the repository's own convention, and drops them from the result),
+and a group wider than three cannot be scored in one pass at all. The window
+planner caps groups at three for this reason; passing four raises rather than
+being trimmed, because trimming would attribute one person's speech to another.
+
+### Licence
+
+**The weights carry no declared licence.** There is no `LICENSE` at the
+repository root; the only one anywhere covers the vendored `dlhammer`, and the
+README says nothing about the weights. Fine for the research use this project
+was built for, but it is a compliance question rather than a technical one, and
+it is worth an explicit decision rather than an assumption.
 
 ### What to verify on the first run
 
 1. **That the weights loaded at all.** `load_report` on the adapter counts the
    keys the encoder recognised and the ones it did not. A checkpoint whose keys
    do not match shows up there as `missing` being most of the model, and it will
-   `load_state_dict(strict=False)` happily without it.
-2. **The crop and the features against a known clip.** The two constants that
-   are ours to get wrong are both in `avannotate/asd/`: `crop.py::crop_box` and
-   `model.py::log_mel`. Both produce ordinary arrays, so a corrected version can
-   be compared against a saved sample without re-running anything else.
-3. **That the traces separate.** Run S5 on a clip where one person speaks and
+   `load_state_dict(strict=False)` happily without it. Verified here against a
+   checkpoint written in the repository's own save format: 268 keys, none
+   missing, none unexpected.
+2. **That the traces separate.** Run S5 on a clip where one person speaks and
    another is visibly silent and look at whether the two traces do.
 
 ## ClearerVoice

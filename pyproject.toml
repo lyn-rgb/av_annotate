@@ -34,6 +34,10 @@ asd = [
     "torchaudio>=2.1",
     "opencv-python-headless>=4.9",
     "numpy>=1.24",
+    # LoCoNet's in-tree torchvggish imports it, and neither it nor the
+    # repository's own requirements list mentions it -- the import fails at
+    # model construction with ModuleNotFoundError: resampy.
+    "resampy>=0.4",
 ]
 tse = [
     "clearvoice",

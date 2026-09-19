@@ -91,10 +91,14 @@ than executed; each names in its own docstring what to verify first. Everything
 that decides what goes into a model pass, and what its output means, is
 separate, pure, and tested.
 
-**S5 is the one to read up on before planning a run.** LoCoNet's repository does
-not import as it stands — its `loconet.py` needs a module the repository does not
-contain — and its weights carry no declared licence. `docs/server-setup.md` says
-what has to happen and what the options are; it is a decision, not a setup step.
+**S5 verified further than the rest**: its network was built and run here, and
+the last four assumptions about it were wrong — the crop margin, the mel-band
+count, the input scaling, and which class to instantiate. All four would have
+degraded the scores quietly rather than raising. Two things to know before a
+run: building the model downloads 275 MB of VGGish weights that LoCoNet's own
+checkpoint then overwrites, and **the weights carry no declared licence** — a
+decision worth making explicitly rather than assuming. `docs/server-setup.md`
+has the detail.
 
 ### Running it
 

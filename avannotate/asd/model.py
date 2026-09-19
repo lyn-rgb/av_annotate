@@ -21,11 +21,21 @@ rather than inferred, and three of them were wrong while they were inferred:
    ``(x / 255 - 0.4161) / 0.1688``, so scaling beforehand applies the shift
    twice -- silently, and to every frame of every video.
 
-The repository's inference path is not usable as a library: it needs
-``dlhammer`` and an AVA data tree, its ``loconet.py`` imports a module the
-repository does not contain, and its ``forward`` is a training step that cannot
-be called without labels.  See :class:`LoCoNetAsd` for what this adapter does
-instead, and ``docs/server-setup.md`` for what it still needs.
+**The repository is usable, narrowly.**  Its ``loconet.py`` and ``train.py``
+cannot be imported -- both need an ``xxlib`` module the repository does not
+contain -- but that is the training harness, and neither is needed to score.
+The model files import cleanly and were built and run to verify this adapter:
+``model/loconet_encoder.py`` plus ``loss_multi.py`` and the in-tree
+``torchvggish``.  Its own inference path is still unusable as a library, because
+it wants ``dlhammer`` and an AVA data tree and its ``forward`` is a training
+step that cannot be called without labels -- so the frontends are driven
+directly here, which is what the repository's ``evaluate_network`` does
+internally too.
+
+Two things the constructor needs that are easy to miss: building it downloads
+**275 MB of VGGish weights** from GitHub releases, and that download happens
+whether or not it is useful -- which it is not, because the LoCoNet checkpoint
+overwrites those weights immediately.  See ``docs/server-setup.md``.
 """
 
 from __future__ import annotations
@@ -47,10 +57,11 @@ LOCO_NET_MAX_SPEAKERS = 3
 #: Video frame rate the audio features are derived against.
 _ASSUMED_VIDEO_FPS = 25.0
 
-#: Feature frames per video frame, from the loader shape ``[4T, 128]``.
+#: Feature frames per video frame, from the loader's ``audio_t == video_t * 4``.
 _AUDIO_FRAMES_PER_VIDEO_FRAME = 4
 
-#: Mel bins, from the same shape.
+#: Mel bands, from VGGish's own ``NUM_MEL_BINS``.
+#:
 #: The mel-band count is VGGish's, and VGGish's is 64 -- not the 128 that the
 #: *output* of the audio frontend happens to be wide.  Reading the shape off the
 #: model's later layer rather than its input is how this was wrong first: 64 is
@@ -76,10 +87,12 @@ class AsdModel(Protocol):
     def score(
         self, crops: NDArray[np.float32], audio: NDArray[np.float32]
     ) -> NDArray[np.float32]:
-        """``[S, T, H, W]`` crops and ``[4T, 128]`` features to ``[S, T]``.
+        """``[S, T, H, W]`` crops and ``[4T, 64]`` features to ``[S, T]``.
 
         The returned probabilities are per speaker and per frame; the caller
-        keeps only the row for the target it asked about.
+        keeps only the row for the target it asked about, which is row 0 --
+        the ordering every caller here depends on, and the reason padding a
+        narrow group at the end is safe.
         """
         ...
 
@@ -95,9 +108,9 @@ def log_mel(
 
     ``hop_length`` defaults to whatever puts four feature frames under each
     video frame at 25 fps -- 160 samples at 16 kHz -- because that relationship
-    is what the ``[4T, 128]`` shape encodes.  Pass it explicitly if a different
-    output frame rate is wanted; the model will not agree, but a caller
-    comparing frontends needs to be able to vary it.
+    is what the loader's ``audio_t == video_t * 4`` check encodes.  Pass it
+    explicitly if a different output frame rate is wanted; the model will not
+    agree, but a caller comparing frontends needs to be able to vary it.
     """
 
     try:
@@ -156,6 +169,33 @@ def features_for_window(
 #: constructed with a different number cannot load these weights at all.
 LOCO_NET_NUM_SPEAKERS = 3
 
+def pad_speakers(crops: NDArray[np.float32], *, width: int) -> NDArray[np.float32]:
+    """Widen a group to the model's fixed speaker axis with black tiles.
+
+    Fewer speakers than the model's axis is the common case -- a window with one
+    person in it still has to be scored -- and black is not an arbitrary filler:
+    the model normalises its own input, so a zero tile becomes the constant
+    ``-2.47`` that the repository's own loader produces for a speaker with no
+    face in frame.  That is what the network was trained to read as "nobody
+    there", and a mid-grey tile would be a face-shaped lie.
+
+    More than ``width`` is an error rather than a truncation: dropping a speaker
+    would silently attribute whatever they did to somebody else.
+    """
+
+    speakers = crops.shape[0]
+    if speakers > width:
+        raise AsdError(
+            f"LoCoNet's speaker axis holds {width} and this group has {speakers}. "
+            "The planner is supposed to cap a group at that width; more than that "
+            "has to be split into two passes rather than trimmed."
+        )
+    if speakers == width:
+        return crops
+    padding = np.zeros((width - speakers, *crops.shape[1:]), dtype=crops.dtype)
+    return np.ascontiguousarray(np.concatenate([crops, padding], axis=0))
+
+
 #: The rest of the config the network reads, from ``configs/multi.yaml``.
 LOCO_NET_AV_LAYERS = 3
 LOCO_NET_ADJUST_ATTENTION = 0
@@ -187,15 +227,20 @@ class LoCoNetAsd:
     """LoCoNet behind :class:`AsdModel`.
 
     The checkpoint and the network come from the official repository
-    (``SJTUwxz/LoCoNet_ASD``), which is not a package, cannot be installed, and
-    -- read off its source -- **cannot be imported as it stands**: its
-    ``loconet.py`` does ``from xxlib.utils.distributed import all_gather``, and
-    ``xxlib`` exists nowhere in the repository.  That is a leftover from the
-    authors' private training harness.
+    (``SJTUwxz/LoCoNet_ASD``), which is not a package and cannot be installed.
 
-    Three further things about that repository shape this adapter.  Each was
-    wrong in the first draft of it, and each would have failed quietly rather
-    than loudly:
+    **It does not import as a whole, but the part that matters does.**
+    ``loconet.py`` and ``train.py`` both open with ``from
+    xxlib.utils.distributed import ...``, and ``xxlib`` exists nowhere in the
+    repository -- a leftover from the authors' private harness.  Neither is
+    imported here: this adapter needs ``model/loconet_encoder.py`` and
+    ``loss_multi.py``, and those import cleanly apart from ``resampy`` and the
+    in-tree ``torchvggish``.  ``loconet.py``'s only other use is the training
+    wrapper, whose ``forward`` cannot be called to score anything anyway.
+
+    Four things about that repository shape this adapter, each verified by
+    building and running it rather than by reading alone.  The first three were
+    wrong in the first draft, and each would have failed quietly:
 
     * **There is no inference entry point.**  ``Loconet.forward`` takes
       ``(audioFeature, visualFeature, labels, masks)`` and returns a loss tuple;
@@ -209,10 +254,11 @@ class LoCoNetAsd:
     * **The visual frontend normalises its own input** -- ``(x / 255 - 0.4161) /
       0.1688`` -- so crops arrive in 0..255 and must not be scaled first.
 
-    Because of the ``xxlib`` import, pointing ``repo`` at a plain checkout is
-    not enough on its own.  Either patch that one line, or vendor the four model
-    files into a directory and point ``repo`` at it.  See
-    ``docs/server-setup.md``.
+    And a fourth, which is a constraint rather than a correction: **the speaker
+    axis is exactly three.**  ``ConvLayer`` convolves *across* speakers with a
+    kernel as tall as ``NUM_SPEAKERS``, so a narrower group has to be padded --
+    which this does with black tiles, the repository's own convention -- and a
+    wider one cannot be scored in a single pass at all.
     """
 
     name = "loconet"
@@ -368,11 +414,32 @@ class LoCoNetAsd:
                 f"video frames, got {list(audio.shape)}"
             )
 
+        if speakers > LOCO_NET_NUM_SPEAKERS:
+            # The speaker axis is fixed by the weights, not by preference:
+            # ``ConvLayer`` builds ``Conv2d(256, 256*s, (s, 7))`` with
+            # ``s = cfg.MODEL.NUM_SPEAKERS`` and convolves *across* the speaker
+            # axis, so more speakers than it was built for cannot be scored in
+            # one pass at all.  The window planner caps groups at this width;
+            # this is where that cap stops being an assumption.
+            raise AsdError(
+                f"LoCoNet's speaker axis holds {LOCO_NET_NUM_SPEAKERS} and this "
+                f"window has {speakers}. The planner is supposed to cap a group at "
+                "that width; more than that has to be split into two passes."
+            )
+
         device = self._resolve_device()
-        # Two leading batch dimensions, because the repository's own loader
-        # always carries one and its configs pin the batch size to 1.
-        visual = torch.from_numpy(crops).unsqueeze(0).to(device)
-        # The audio is a single-channel image: [b, 1, 4T, mel].
+        # How many rows the caller asked about, which is not the width the model
+        # runs at.  The padding happens here and is dropped again before
+        # returning, so the caller never sees it.
+        requested = speakers
+        crops = pad_speakers(crops, width=LOCO_NET_NUM_SPEAKERS)
+        speakers = LOCO_NET_NUM_SPEAKERS
+
+        # Four dimensions, not five: the visual frontend unpacks
+        # ``B, T, W, H = x.shape`` itself and the caller is expected to have
+        # already folded any batch dimension into the speaker one.
+        visual = torch.from_numpy(crops).to(device)
+        # The audio, by contrast, is a single-channel image: [b, 1, 4T, mel].
         audio_feature = torch.from_numpy(audio).unsqueeze(0).unsqueeze(0).to(device)
 
         with torch.no_grad():
@@ -384,14 +451,25 @@ class LoCoNetAsd:
             audio_embed, visual_embed = self._encoder.forward_cross_attention(
                 audio_embed, visual_embed
             )
+            # ``b`` and ``s`` are passed rather than left to the defaults: the
+            # backend hands them to every other ConvLayer, which reshapes by
+            # them.  The defaults are 1 and 1, so omitting them would silently
+            # reshape a three-speaker batch as if it were one.
             combined = self._encoder.forward_audio_visual_backend(
-                audio_embed, visual_embed
+                audio_embed, visual_embed, 1, speakers
             )
             # [S*T, 256] -> [S, T, 2] -> the probability of the speaking class.
+            # The flat axis is ordered speaker-major, which is the order the
+            # repository's own ``view(b, s, t, -1)`` assumes.
             logits = self._head.FC(combined).view(speakers, frames, 2)
             probabilities = torch.softmax(logits, dim=-1)[..., 1]
 
-        return np.asarray(probabilities.detach().cpu().numpy(), dtype=np.float32)
+        # The padding rows are dropped rather than returned: they are an
+        # artefact of the model's fixed width, and the caller asked about
+        # ``requested`` speakers.  Dropping from the end is safe because the
+        # target is row 0 -- which is the ordering the whole stage depends on.
+        answer = probabilities[:requested]
+        return np.asarray(answer.detach().cpu().numpy(), dtype=np.float32)
 
 
 def build_asd_model(config: Mapping[str, Any]) -> AsdModel:
