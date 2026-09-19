@@ -366,6 +366,19 @@ checks its own output through the reader before returning it — a document this
 pipeline's own reader rejects would otherwise fail at the far end of a batch, on
 the one video nobody is watching.
 
+### A word can start before the line it is in
+
+Measured on the sample corpus: an utterance beginning at 2.832 s whose first word
+the recogniser places at 2.582 s. Nothing is wrong — the segment span is trimmed
+from a VAD that shaves onsets, and S8 reads 0.25 s of context around every
+segment, so a word straddling the boundary is kept if most of it falls inside.
+The word's own start is reported rather than clamped to the line, because
+clamping it would replace what the recogniser said with what the pipeline
+decided, and the pipeline's boundary is the less reliable of the two.
+
+The consequence for a consumer is that word timestamps are not guaranteed to
+nest inside their utterance. Nothing downstream should assume they do.
+
 ### The one real gap: speech from off camera
 
 **Nothing in this pipeline produces an utterance for a speaker who is not on

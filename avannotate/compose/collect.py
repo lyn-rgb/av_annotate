@@ -128,6 +128,11 @@ def utterances(
         if not text:
             continue
 
+        # The words are stripped here, unlike the ones S8 keeps, and the
+        # difference is deliberate.  S8 holds the recogniser's tokens verbatim
+        # because the leading space is what tells ``join_words`` how to space a
+        # script -- and that job is finished by the time the text is stored on
+        # the line above.  What is left is a word, and a word is "How".
         words = tuple(
             Word(
                 text=str(item.get("text", "")).strip(),

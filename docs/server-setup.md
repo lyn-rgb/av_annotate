@@ -365,6 +365,55 @@ wants `-Instruct`. `add_vision_id=True` is a real variable that labels each imag
 ("Picture 1: ...") and may help with many frames, but it also invites
 frame-by-frame description, which is the opposite of what a shot caption wants.
 
+## What has actually been run, and where
+
+Most of this document is unverified interface. This is the part that is not. On
+an Apple M4 laptop (16 GB, no CUDA), against the three sample clips:
+
+| stage | status | note |
+| --- | --- | --- |
+| S0, S1, S2, S3 | **run** | insightface on CPU; 120 frames → 240 detections → 2 tracklets → 2 people |
+| S8 | **run** | faster-whisper `base`, CPU int8; 7.6 s for a 12 s clip |
+| S9 (event) | **run** | PANNs CNN14, CPU; 2.0 s including model load |
+| S11 | **run** | all five gates passed on real output |
+| S4, S5, S7, S9 (emotion, delivery), S10 | **not run** | need a GPU, a repo clone, or more RAM than this machine has |
+
+Four specific things that run confirmed, which reading could not:
+
+- **`"".join(word.word)` reproduces `segment.text` exactly**, leading spaces and
+  all. That is the join `avannotate.asr.text` performs, so the multilingual
+  spacing rule is real rather than inferred.
+- **A numpy array is used as-is at 16 kHz.** `info.duration` matched the sample
+  count exactly; nothing resampled.
+- **PANNs' `clipwise` output is already sigmoid** — observed range [0, 0.84] on a
+  speech segment, one independent probability per class, no softmax. The
+  threshold is yours to pick, which is what `event_min_score` is.
+- **`IGNORED_LABELS` earns its place.** On real speech the confident labels were
+  `Speech` (0.84) and `Music` (0.71). Both are on the ignore list, so the
+  `unmapped` report came back empty; without it every segment in a corpus would
+  report those two and the signal would be gone.
+
+### Two things that look like problems and are not
+
+**numpy prints `divide by zero` / `overflow` / `invalid value encountered in
+matmul` from inside faster-whisper.** These come from the same numpy-2 + Apple
+Accelerate interaction already worked around in `faces/kalman.py`. The mel
+output was checked directly: shape (80, 1197), no NaN, no inf, values in
+[-0.91, 1.09]. It is cosmetic, it appears only on Apple silicon, and it is not a
+reason to distrust a transcript.
+
+**PANNs writes `class_labels_indices.csv` into `~/panns_data/` on import**,
+regardless of the `checkpoint` path you pass. On a machine with no home
+directory (a container running as `nobody`) that import will fail, and the fix
+is to pre-place both files.
+
+### Cost, measured on CPU
+
+A 12-second clip, on a laptop: S1 is 34 s and dominates (a GPU is far faster),
+S2 and S3 are under a second each, S8 is 8 s with `base`, S9's event dimension
+is 2 s. Use these only to sanity-check that the GPU machine is faster than a
+laptop — the numbers that decide sharding have to come from the server.
+
 ## Running the pipeline
 
 ```bash

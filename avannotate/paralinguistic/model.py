@@ -57,7 +57,12 @@ class TaggerError(RuntimeError):
 class Tagger(Protocol):
     """What the stage needs: one call, every dimension's answer."""
 
-    name: str
+    #: Read-only, because an implementation may need to derive it from the
+    #: dimensions it is running rather than being able to hold it as a constant
+    #: -- a fixed string would name models that were never loaded.
+    @property
+    def name(self) -> str: ...
+
     dimensions: tuple[str, ...]
 
     def tag(self, samples: NDArray[np.float32]) -> Mapping[str, tuple[TagScore, ...]]:
@@ -123,10 +128,16 @@ def _ranked(labels: Sequence[str], scores: Sequence[float], *, top: int) -> tupl
     return tuple(paired[:top])
 
 
+#: What each dimension's model is called, for the record.
+_MODEL_NAMES = {
+    "emotion": "emotion2vec+",
+    "delivery": "voice-tagging-whisper",
+    "event": "panns-cnn14",
+}
+
+
 class ThreeModelTagger:
     """emotion2vec+ for affect, a voice tagger for delivery, PANNs for events."""
-
-    name = "emotion2vec+voice-tagging+panns"
 
     def __init__(
         self,
@@ -151,6 +162,17 @@ class ThreeModelTagger:
             "delivery": _Model("voice-tagging-whisper", self._build_delivery),
             "event": _Model("panns-cnn14", self._build_event),
         }
+
+    @property
+    def name(self) -> str:
+        """Only the models that are actually being run.
+
+        A fixed string naming all three would appear in the stage's record even
+        when the config asked for one, and a reader checking which models
+        produced a set of tags would be told the wrong thing.
+        """
+
+        return "+".join(_MODEL_NAMES[item] for item in DIMENSIONS if item in self.dimensions)
 
     # -- emotion2vec+ ----------------------------------------------------- #
 
