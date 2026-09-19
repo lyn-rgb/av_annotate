@@ -5,7 +5,35 @@ scripts/setup_server.sh      # clones, installs, fetches what it can
 avannotate doctor            # says what is still missing, and how to fix it
 ```
 
-Those two are the setup. The rest of this document is the detail behind them:
+Those two are the setup.
+
+**If the server cannot reach github.com, start with the bundle instead.** More
+depends on GitHub than this repository's own three URLs: insightface fetches
+`buffalo_l` from a GitHub release, and so does torchvggish's VGGish. Building the
+pipeline's own environment is therefore not enough — the dependencies reach out
+on their own, at first use, from inside code we do not control.
+
+```bash
+# on a machine that can reach the internet
+scripts/make_offline_bundle.sh --out ./offline-bundle
+scp offline-bundle.tar server:/tmp/
+
+# on the server
+tar xf /tmp/offline-bundle.tar -C /tmp
+scripts/setup_server.sh --from-bundle /tmp/offline-bundle
+```
+
+The bundle holds a tarball of each repository, the model files whose home is a
+GitHub release, `MANIFEST.json` with a sha256 per file, and `repos/SOURCES.txt`
+recording the commit each tarball came from. Nothing in it is fetched again on
+the server. Add `--with-wheels` if PyPI is out of reach too, and `--with-hf` to
+cover the Hugging Face checkpoints.
+
+Two things it deliberately does not fetch, because a script cannot: **LoCoNet's
+AVA weights**, which are behind a Google Drive link, and anything else you have
+already downloaded by hand. Drop those into `offline-bundle/models/` before
+packing and the server picks them up; `make_offline_bundle.sh` also copies
+them in automatically from `models/` if they are already there. The rest of this document is the detail behind them:
 what each model needs, what could not be verified without a GPU, and what to
 check on the first run of each.
 

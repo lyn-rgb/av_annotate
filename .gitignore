@@ -31,3 +31,8 @@ data/examples/
 
 # Model weights are fetched, not committed.
 /models/
+
+# A transfer artifact, built on demand by scripts/make_offline_bundle.sh.  Not
+# source: it holds copies of other people's repositories and multi-GB weights.
+/offline-bundle/
+*.tar

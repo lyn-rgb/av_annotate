@@ -149,6 +149,12 @@ that can be automated and prints the exact commands for the two that cannot — 
 Google Drive link and a Zenodo download. Following the script and re-running
 `doctor` is the whole setup.
 
+**If the server cannot reach github.com**, run `scripts/make_offline_bundle.sh`
+on a machine that can and install from what it produces. That matters more than
+it sounds: three GitHub URLs are visible in this repository, but the
+dependencies fetch from GitHub too — insightface's `buffalo_l` and torchvggish's
+VGGish both come from releases inside packages we do not control.
+
 **S3 needs insightface.** YuNet detects but produces no identity vectors, and S3
 refuses to guess rather than fragmenting every identity into a separate person.
 Use `configs/s1.insightface.json`.
