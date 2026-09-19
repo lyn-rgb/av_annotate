@@ -164,9 +164,16 @@ it is worth an explicit decision rather than an assumption.
 1. **That the weights loaded at all.** `load_report` on the adapter counts the
    keys the encoder recognised and the ones it did not. A checkpoint whose keys
    do not match shows up there as `missing` being most of the model, and it will
-   `load_state_dict(strict=False)` happily without it. Verified here against a
-   checkpoint written in the repository's own save format: 268 keys, none
-   missing, none unexpected.
+   `load_state_dict(strict=False)` happily without it. **Verified against the
+   real release**: 272 keys, `missing: 0`, `unexpected: 0`.
+
+   That check earned its place. The released file is a plain save of the
+   training wrapper, so every key begins `model.module.` — and what is left
+   after stripping that is two *siblings*, `model.<encoder>` and
+   `lossAV.<head>`. An earlier version of this adapter looked for
+   `model.lossAV.`, and it passed a test against a hand-built checkpoint —
+   because that checkpoint had been written from the same wrong assumption.
+   Only the real file settled it.
 2. **That the traces separate.** Run S5 on a clip where one person speaks and
    another is visibly silent and look at whether the two traces do.
 

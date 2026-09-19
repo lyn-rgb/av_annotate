@@ -169,6 +169,54 @@ def features_for_window(
 #: constructed with a different number cannot load these weights at all.
 LOCO_NET_NUM_SPEAKERS = 3
 
+
+#: The rest of the config the network reads, from ``configs/multi.yaml``.
+LOCO_NET_AV_LAYERS = 3
+LOCO_NET_ADJUST_ATTENTION = 0
+
+
+def split_checkpoint(
+    state: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The released checkpoint into ``(encoder state, classifier head state)``.
+
+    The file is a plain save of the training wrapper's ``state_dict``, so every
+    key begins ``model.module.``.  What is left after stripping that is **two
+    sibling groups**, not a nested one::
+
+        model.module.model.visualFrontend.frontend3D.0.weight   -> encoder
+        model.module.lossAV.FC.weight                           -> head
+        model.module.lossA.FC.weight                            -> ignored
+        model.module.lossV.FC.weight                            -> ignored
+
+    The head is *not* under ``model.``, and assuming it was is how this was
+    wrong first -- it stayed wrong through a test against a hand-built
+    checkpoint, because that checkpoint had been written from the same wrong
+    assumption.  The real file's 272 keys are what settled it, and they are what
+    the test below is built from.
+
+    ``lossA`` and ``lossV`` are the audio-only and visual-only heads, 128-d where
+    the AV head is 256-d; nothing here uses them.
+    """
+
+    outer = "model.module."
+    stripped = {
+        (key[len(outer) :] if key.startswith(outer) else key): value
+        for key, value in state.items()
+    }
+    encoder_state = {
+        key[len("model.") :]: value
+        for key, value in stripped.items()
+        if key.startswith("model.")
+    }
+    head_state = {
+        key[len("lossAV.") :]: value
+        for key, value in stripped.items()
+        if key.startswith("lossAV.")
+    }
+    return encoder_state, head_state
+
+
 def pad_speakers(crops: NDArray[np.float32], *, width: int) -> NDArray[np.float32]:
     """Widen a group to the model's fixed speaker axis with black tiles.
 
@@ -194,11 +242,6 @@ def pad_speakers(crops: NDArray[np.float32], *, width: int) -> NDArray[np.float3
         return crops
     padding = np.zeros((width - speakers, *crops.shape[1:]), dtype=crops.dtype)
     return np.ascontiguousarray(np.concatenate([crops, padding], axis=0))
-
-
-#: The rest of the config the network reads, from ``configs/multi.yaml``.
-LOCO_NET_AV_LAYERS = 3
-LOCO_NET_ADJUST_ATTENTION = 0
 
 
 def _loconet_config() -> Any:
@@ -341,32 +384,13 @@ class LoCoNetAsd:
                 "The Google Drive file is a plain torch.save of the wrapper's state."
             )
 
-        # Training saved through a DDP wrapper around the wrapper, so keys carry
-        # both prefixes.  The repository's own loadParameters strips the literal
-        # "model.module."; the inner "model." is the encoder's own submodule
-        # name inside the wrapper.
-        outer = "model.module."
-        stripped = {
-            (key[len(outer) :] if key.startswith(outer) else key): value
-            for key, value in state.items()
-        }
-        inner = "model."
-        encoder_state = {
-            key[len(inner) :]: value
-            for key, value in stripped.items()
-            if key.startswith(inner) and not key.startswith(inner + "loss")
-        }
-        head_state = {
-            key[len(inner + "lossAV.") :]: value
-            for key, value in stripped.items()
-            if key.startswith(inner + "lossAV.")
-        }
+        encoder_state, head_state = split_checkpoint(state)
         if not head_state:
             raise AsdError(
                 f"{checkpoint_path} holds no lossAV weights, and this adapter needs "
                 "the classifier head -- without it the encoder's 256-d features mean "
                 "nothing on their own. Keys seen: "
-                + ", ".join(sorted(stripped)[:8])
+                + ", ".join(sorted(state)[:8])
             )
 
         try:

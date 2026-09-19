@@ -442,3 +442,68 @@ def test_the_mel_band_count_is_vggishs_not_the_frontend_output() -> None:
     from avannotate.asd.model import _MEL_BINS
 
     assert _MEL_BINS == 64
+
+
+# --------------------------------------------------------------------------- #
+# the checkpoint's key layout, taken from the real release
+# --------------------------------------------------------------------------- #
+
+
+def test_the_released_checkpoint_splits_into_an_encoder_and_a_head() -> None:
+    """The head is a *sibling* of the encoder, not a child of it.
+
+    Keys below are the shape the real file has: 272 keys, every one prefixed
+    ``model.module.``, leaving ``model.<encoder>`` and ``lossAV.<head>`` side by
+    side.  Assuming the head sat under ``model.`` is how this was wrong first --
+    and it stayed wrong through a test against a hand-built checkpoint, because
+    that checkpoint had been written from the same wrong assumption.  The real
+    file is what settled it, so the real file's shape is what is asserted here.
+    """
+
+    from avannotate.asd.model import split_checkpoint
+
+    released = {
+        "model.module.model.visualFrontend.frontend3D.0.weight": "w",
+        "model.module.model.visualFrontend.frontend3D.0.bias": "b",
+        "model.module.model.audioEncoder.conv1.weight": "w",
+        "model.module.model.convAV.0.conv2d.weight": "w",
+        "model.module.lossAV.FC.weight": "w",
+        "model.module.lossAV.FC.bias": "b",
+        # The audio-only and visual-only heads, which nothing here uses.
+        "model.module.lossA.FC.weight": "w",
+        "model.module.lossV.FC.weight": "w",
+    }
+
+    encoder, head = split_checkpoint(released)
+
+    assert "visualFrontend.frontend3D.0.weight" in encoder
+    assert "audioEncoder.conv1.weight" in encoder
+    assert "convAV.0.conv2d.weight" in encoder
+    assert set(head) == {"FC.weight", "FC.bias"}
+    # The two heads this pipeline does not use must not leak into either half.
+    assert not any("lossA." in key or "lossV." in key for key in encoder | head)
+
+
+def test_an_unprefixed_checkpoint_still_splits() -> None:
+    """A re-save without the DDP wrapper is a plausible thing to be handed."""
+
+    from avannotate.asd.model import split_checkpoint
+
+    encoder, head = split_checkpoint(
+        {"model.audioEncoder.conv1.weight": "w", "lossAV.FC.weight": "w"}
+    )
+
+    assert set(encoder) == {"audioEncoder.conv1.weight"}
+    assert set(head) == {"FC.weight"}
+
+
+def test_the_av_head_is_the_one_the_first_convolution_was_built_for() -> None:
+    """``forward_audio_visual_backend`` concatenates two 128-d streams and the
+    head is ``Linear(256, 2)``; ``lossA``/``lossV`` are 128-d because each sees
+    only one stream.  Picking the wrong one would not fail -- it would score
+    nonsense."""
+
+    from avannotate.asd.model import split_checkpoint
+
+    _, head = split_checkpoint({"model.module.lossAV.FC.weight": "w"})
+    assert set(head) == {"FC.weight"}
