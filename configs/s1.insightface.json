@@ -1,0 +1,8 @@
+{
+  "stride": 3,
+  "backend": "insightface",
+  "model_name": "buffalo_l",
+  "model_root": "../models/insightface",
+  "score_threshold": 0.6,
+  "embedding_interval_seconds": 0.5
+}

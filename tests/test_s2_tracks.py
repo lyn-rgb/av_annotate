@@ -23,6 +23,7 @@ class _MovingDetector:
     """One face drifting right, plus a static second face."""
 
     name = "stub"
+    provides_embeddings = False
 
     def __init__(self, *, faces: int = 2, score: float = 0.9) -> None:
         self.faces = faces
@@ -144,6 +145,7 @@ def test_an_empty_detection_set_yields_no_tracks(
 
     class _Blind:
         name = "blind"
+        provides_embeddings = False
 
         def detect(self, frame: np.ndarray) -> tuple[Detection, ...]:
             return ()

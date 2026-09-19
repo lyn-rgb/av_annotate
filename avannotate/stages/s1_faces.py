@@ -1,9 +1,15 @@
-"""Stage S1: detect faces in sampled frames.
+"""Stage S1: detect faces in sampled frames, with identity vectors.
 
-Detection only.  Tracking lives in S2 and identity clustering in S3, because the
-three have different tuning lifetimes: a detector is swapped once per corpus,
-tracking parameters are tuned against a review sample, and clustering thresholds
-change whenever the corpus's cast does.
+Detection and embedding, no tracking.  Tracking lives in S2 and identity
+clustering in S3, because the three have different tuning lifetimes: a detector
+is swapped once per corpus, tracking parameters are tuned against a review
+sample, and clustering thresholds change whenever the corpus's cast does.
+
+The vectors go in a sidecar array rather than in the rows; each detection that
+has one carries an ``emb`` index into it.  Only some detectors produce them --
+``Detection.embedding`` is ``None`` under YuNet -- so the summary records
+whether the backend does, and S3 refuses to pretend a corpus without vectors
+can be clustered.
 
 On background faces
 -------------------
@@ -28,11 +34,13 @@ profile-turned faces.
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 
 from avannotate.faces.detect import Detector, DetectorError, build_detector
 from avannotate.faces.frames import FrameSampling, iter_frames
@@ -57,6 +65,7 @@ STAGE = "s1-faces"
 VERSION = "s1-v1"
 
 DETECTIONS_NAME = "detections.jsonl"
+EMBEDDINGS_NAME = "embeddings.npy"
 SUMMARY_NAME = "summary.json"
 
 #: Reported, not enforced: a corpus whose real faces score here is not broken,
@@ -73,6 +82,15 @@ class S1Config:
     model_root: str | None = None
     score_threshold: float = 0.6
     max_frames: int | None = None
+    #: How often to keep identity vectors, in seconds of video.
+    #:
+    #: A disk decision, not a compute one: insightface computes the embedding as
+    #: part of its own pipeline, so detecting on a frame produces one whether or
+    #: not it is written.  At 512 float16 values per face, an hour of two-person
+    #: video is roughly 25 MB per second of interval -- keeping every sampled
+    #: frame would be tens of gigabytes across a thousand-hour batch, while one
+    #: per second still gives a ten-second track ten vectors to average.
+    embedding_interval_seconds: float = 1.0
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> S1Config:
@@ -100,6 +118,9 @@ class S1Config:
             max_frames=(
                 config_int(mapping, "max_frames", 0) if max_frames is not None else None
             ),
+            embedding_interval_seconds=config_float(
+                mapping, "embedding_interval_seconds", 1.0
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -111,6 +132,7 @@ class S1Config:
             "model_root": self.model_root,
             "score_threshold": self.score_threshold,
             "max_frames": self.max_frames,
+            "embedding_interval_seconds": self.embedding_interval_seconds,
         }
 
     def detector_config(self) -> dict[str, object]:
@@ -130,6 +152,7 @@ class _Tally:
     sampled_frames: int = 0
     frames_with_faces: int = 0
     detections: int = 0
+    embeddings: int = 0
     scores: list[float] = field(default_factory=list)
     faces_per_frame: dict[int, int] = field(default_factory=dict)
 
@@ -147,6 +170,7 @@ class _Tally:
             "sampled_frames": self.sampled_frames,
             "frames_with_faces": self.frames_with_faces,
             "detections": self.detections,
+            "embeddings": self.embeddings,
             "faces_per_frame": {
                 str(key): value for key, value in sorted(self.faces_per_frame.items())
             },
@@ -165,6 +189,19 @@ class _Tally:
         return payload
 
 
+def _embedding_every(config: S1Config, timeline: s0_preprocess.Timeline) -> int:
+    """Sampled-frame interval between kept embeddings.
+
+    A non-positive interval means "keep none", expressed as an interval so large
+    the modulo never fires, rather than a second branch in the loop.
+    """
+
+    if config.embedding_interval_seconds <= 0.0:
+        return sys.maxsize
+    steps = timeline.fps * config.embedding_interval_seconds / max(1, config.stride)
+    return max(1, int(round(steps)))
+
+
 def _run_detection(
     context: StageContext,
     config: S1Config,
@@ -177,26 +214,48 @@ def _run_detection(
     if config.max_frames is not None:
         frame_count = min(frame_count, config.max_frames * config.stride)
 
+    keeping = detector.provides_embeddings
+    every = _embedding_every(config, timeline)
+
     tally = _Tally()
     destination = context.output(STAGE, DETECTIONS_NAME)
     temporary = destination.with_name(destination.name + ".tmp")
+    vectors: list[tuple[float, ...]] = []
 
     with temporary.open("w", encoding="utf-8") as handle:
-        for index, frame in iter_frames(
-            context.source,
-            width=timeline.width,
-            height=timeline.height,
-            sampling=sampling,
-            frame_count=frame_count,
+        for step, (index, frame) in enumerate(
+            iter_frames(
+                context.source,
+                width=timeline.width,
+                height=timeline.height,
+                sampling=sampling,
+                frame_count=frame_count,
+            )
         ):
             detections = detector.detect(frame)
             tally.observe(detections)
+
+            store = keeping and step % every == 0
+            faces: list[dict[str, object]] = []
+            for detection in detections:
+                if store and detection.embedding is not None:
+                    # Take the vector out of the detection before writing the row
+                    # -- 512 floats per detection would dominate the file -- and
+                    # record where it went.  The append has to happen first: it
+                    # is the only place the vector still exists.
+                    vectors.append(detection.embedding)
+                    detection = replace(
+                        detection, embedding=None, embedding_index=len(vectors) - 1
+                    )
+                    tally.embeddings += 1
+                faces.append(detection.to_dict())
+
             handle.write(
                 json.dumps(
                     {
                         "frame": index,
                         "time": round(index / timeline.fps, 4) if timeline.fps else 0.0,
-                        "faces": [detection.to_dict() for detection in detections],
+                        "faces": faces,
                     },
                     ensure_ascii=False,
                 )
@@ -204,6 +263,8 @@ def _run_detection(
             )
 
     temporary.replace(destination)
+    if vectors:
+        np.save(context.output(STAGE, EMBEDDINGS_NAME), np.asarray(vectors, dtype=np.float16))
     return tally
 
 
@@ -241,16 +302,18 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
         {
             "schema_version": "avannotate-faces-summary-v1",
             "detector": detector.name,
+            "provides_embeddings": detector.provides_embeddings,
             "config": config.to_dict(),
             "timeline": {"duration": timeline.duration, "fps": timeline.fps},
             "detection": tally.summary(),
         },
     )
 
-    artifacts = tuple(
-        Artifact.capture(context.work_dir, path)
-        for path in (context.output(STAGE, DETECTIONS_NAME), summary_path)
-    )
+    produced = [context.output(STAGE, DETECTIONS_NAME), summary_path]
+    embeddings_file = context.output(STAGE, EMBEDDINGS_NAME)
+    if embeddings_file.is_file():
+        produced.append(embeddings_file)
+    artifacts = tuple(Artifact.capture(context.work_dir, path) for path in produced)
     state.save(
         StageRecord(
             stage=STAGE,
@@ -345,6 +408,24 @@ def load_frame_detections(context: StageContext) -> tuple[FrameDetections, ...]:
             )
         )
     return tuple(frames)
+
+
+def load_embeddings(context: StageContext) -> NDArray[np.float32] | None:
+    """The identity vectors, or ``None`` when the backend produced none.
+
+    float16 on disk, widened to float32 here: the comparison that matters is a
+    cosine similarity between vectors that are ~0.09 apart, and float16 carries
+    about three decimal digits, which is not enough headroom to be comfortable
+    about a threshold near 0.4.
+    """
+
+    path = context.work_dir / STAGE / EMBEDDINGS_NAME
+    if not path.is_file():
+        return None
+    vectors = np.load(path)
+    if vectors.size == 0:
+        return None
+    return np.asarray(vectors, dtype=np.float32)
 
 
 def load_config(context: StageContext) -> S1Config:

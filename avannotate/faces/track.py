@@ -16,14 +16,14 @@ human can tune and "thirty update steps" is not.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
 import numpy as np
 
 from avannotate.faces.kalman import KalmanFilter, Matrix, Vector
-from avannotate.faces.types import Detection, FrameDetections
+from avannotate.faces.types import Detection, FrameDetections, coerce_number
 from avannotate.matching import Box, iou_distance, linear_assignment
 
 
@@ -56,10 +56,12 @@ class TrackDetection:
     time: float
     box: Box
     score: float
+    #: Row in S1's sidecar array, when this detection has a vector.
+    embedding_index: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         x, y, width, height = self.box
-        return {
+        payload: dict[str, object] = {
             "frame": self.frame_index,
             "time": round(self.time, 4),
             "x": round(x, 2),
@@ -68,6 +70,25 @@ class TrackDetection:
             "h": round(height, 2),
             "score": round(self.score, 4),
         }
+        if self.embedding_index is not None:
+            payload["emb"] = self.embedding_index
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> TrackDetection:
+        raw_index = payload.get("emb")
+        return cls(
+            frame_index=int(coerce_number(payload["frame"], "frame")),
+            time=coerce_number(payload["time"], "time"),
+            box=(
+                coerce_number(payload["x"], "x"),
+                coerce_number(payload["y"], "y"),
+                coerce_number(payload["w"], "w"),
+                coerce_number(payload["h"], "h"),
+            ),
+            score=coerce_number(payload["score"], "score"),
+            embedding_index=None if raw_index is None else int(coerce_number(raw_index, "emb")),
+        )
 
 
 @dataclass
@@ -121,6 +142,7 @@ class Track:
                 time=time,
                 box=(detection.x, detection.y, detection.width, detection.height),
                 score=detection.score,
+                embedding_index=detection.embedding_index,
             )
         )
         self.last_score = detection.score
@@ -385,6 +407,17 @@ class TrackQuality:
             mean_width=mean_width,
             mean_height=mean_height,
             motion=motion,
+        )
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> TrackQuality:
+        return cls(
+            frames=int(coerce_number(payload["frames"], "frames")),
+            span_seconds=coerce_number(payload["span_seconds"], "span_seconds"),
+            mean_score=coerce_number(payload["mean_score"], "mean_score"),
+            mean_width=coerce_number(payload["mean_width"], "mean_width"),
+            mean_height=coerce_number(payload["mean_height"], "mean_height"),
+            motion=coerce_number(payload["motion"], "motion"),
         )
 
     def to_dict(self) -> dict[str, object]:

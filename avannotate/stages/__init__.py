@@ -11,7 +11,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import Protocol
 
-from avannotate.stages import s0_preprocess, s1_faces, s2_tracks
+from avannotate.stages import s0_preprocess, s1_faces, s2_tracks, s3_cluster
 from avannotate.stages.base import StageContext, StageRun
 
 
@@ -45,6 +45,7 @@ _MODULES: dict[str, ModuleType] = {
     s0_preprocess.STAGE: s0_preprocess,
     s1_faces.STAGE: s1_faces,
     s2_tracks.STAGE: s2_tracks,
+    s3_cluster.STAGE: s3_cluster,
 }
 
 

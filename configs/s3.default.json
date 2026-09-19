@@ -1,0 +1,7 @@
+{
+  "min_frames": 3,
+  "min_span_seconds": 0.3,
+  "min_mean_score": 0.6,
+  "min_mean_height": 16.0,
+  "max_distance": 0.45
+}

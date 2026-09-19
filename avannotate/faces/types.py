@@ -56,6 +56,12 @@ class Detection:
     when the detector provides it.  It is not decoration: the mouth corners give
     the lip crop target-speaker extraction wants, and the eye line gives the
     roll angle that decides whether a crop is worth extracting at all.
+
+    ``embedding`` is the identity vector, present only when the detector
+    produces one -- insightface does, YuNet does not.  It is what lets S3 rejoin
+    the tracklets that a camera pan splits: measured on the sample corpus, two
+    fragments of one person after a 211 px pan score 0.78 cosine against each
+    other and 0.08-0.12 against everyone else.
     """
 
     x: float
@@ -64,6 +70,11 @@ class Detection:
     height: float
     score: float
     landmarks: tuple[tuple[float, float], ...] = ()
+    embedding: tuple[float, ...] | None = None
+    #: Row in the sidecar array holding this detection's vector.  Carried
+    #: separately from the vector so the JSON stays small, and carried at all so
+    #: S2 does not have to re-link by box when it copies detections into tracks.
+    embedding_index: int | None = None
 
     @property
     def center(self) -> tuple[float, float]:
@@ -82,6 +93,13 @@ class Detection:
         return (self.landmarks[3], self.landmarks[4])
 
     def to_dict(self) -> dict[str, object]:
+        """JSON without the embedding.
+
+        A 512-float vector per detection would dominate the file -- hundreds of
+        megabytes an hour.  S1 writes them to a sidecar array and links each row
+        to its vector by position, so this stays readable.
+        """
+
         payload: dict[str, object] = {
             "x": round(self.x, 2),
             "y": round(self.y, 2),
@@ -91,6 +109,8 @@ class Detection:
         }
         if self.landmarks:
             payload["landmarks"] = [[round(px, 2), round(py, 2)] for px, py in self.landmarks]
+        if self.embedding_index is not None:
+            payload["emb"] = self.embedding_index
         return payload
 
     @classmethod
@@ -102,6 +122,11 @@ class Detection:
             height=coerce_number(payload["h"], "h"),
             score=coerce_number(payload["score"], "score"),
             landmarks=_points(payload.get("landmarks"), "landmarks"),
+            embedding_index=(
+                int(coerce_number(payload["emb"], "emb"))
+                if payload.get("emb") is not None
+                else None
+            ),
         )
 
 

@@ -43,6 +43,12 @@ class Detector(Protocol):
 
     name: str
 
+    #: Whether ``Detection.embedding`` will be populated.  Declared rather than
+    #: discovered: S3's identity clustering cannot run at all without vectors,
+    #: and a corpus detected with YuNet should say so before an hour of
+    #: clustering produces nothing.
+    provides_embeddings: bool
+
     def detect(self, frame: Frame) -> tuple[Detection, ...]: ...
 
 
@@ -55,6 +61,7 @@ class YuNetDetector:
     """
 
     name = "yunet"
+    provides_embeddings = False
 
     def __init__(
         self,
@@ -128,6 +135,7 @@ class InsightFaceDetector:
     """
 
     name = "insightface"
+    provides_embeddings = True
 
     def __init__(
         self,
@@ -138,16 +146,21 @@ class InsightFaceDetector:
         providers: tuple[str, ...] = ("CUDAExecutionProvider", "CPUExecutionProvider"),
     ) -> None:
         try:
-            from insightface.app import FaceAnalysis  # type: ignore[import-not-found]
+            from insightface.app import FaceAnalysis  # type: ignore[import-untyped]
         except ModuleNotFoundError as error:
             raise DetectorError(
                 "insightface is required for this detector: pip install insightface onnxruntime"
             ) from error
 
+        # ``buffalo_l`` bundles five models; two of them are unused here.
+        # Landmarks come from the detector itself, and nothing downstream wants
+        # gender or age, so loading them is pure cost -- and on a corpus this
+        # size the cost is the stage's runtime.
         self._app = FaceAnalysis(
             name=model_name,
             root=str(root) if root is not None else None,
             providers=list(providers),
+            allowed_modules=["detection", "recognition"],
         )
         self._app.prepare(ctx_id=0, det_size=det_size)
 
@@ -160,7 +173,19 @@ class InsightFaceDetector:
             landmarks: tuple[tuple[float, float], ...] = ()
             if keypoints is not None:
                 landmarks = tuple((float(x), float(y)) for x, y in np.asarray(keypoints))
+
+            # ``bbox`` is [x1, y1, x2, y2] -- corners, not a corner and a size.
+            # Reading it as (x, y, w, h) yields a box the size of the frame and
+            # an IoU near zero, which looks like a matching failure rather than
+            # a convention mistake.
             left, top, right, bottom = (float(value) for value in face.bbox)
+
+            raw_embedding = getattr(face, "normed_embedding", None)
+            embedding = (
+                tuple(float(value) for value in np.asarray(raw_embedding))
+                if raw_embedding is not None
+                else None
+            )
             results.append(
                 Detection(
                     x=left,
@@ -169,6 +194,7 @@ class InsightFaceDetector:
                     height=bottom - top,
                     score=float(face.det_score),
                     landmarks=landmarks,
+                    embedding=embedding,
                 )
             )
         return tuple(results)

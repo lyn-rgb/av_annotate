@@ -24,6 +24,7 @@ class _StubDetector:
     """Reports a fixed number of faces per frame, at a fixed place."""
 
     name = "stub"
+    provides_embeddings = False
 
     def __init__(self, faces_per_frame: int = 2, score: float = 0.9) -> None:
         self.faces_per_frame = faces_per_frame

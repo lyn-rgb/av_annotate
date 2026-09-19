@@ -32,7 +32,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from avannotate.faces.track import Track, TrackerConfig, TrackQuality, track_detections
+from avannotate.faces.track import (
+    Track,
+    TrackDetection,
+    TrackerConfig,
+    TrackQuality,
+    track_detections,
+)
+from avannotate.faces.types import coerce_number
 from avannotate.stages import s0_preprocess, s1_faces
 from avannotate.stages.base import (
     Artifact,
@@ -239,17 +246,66 @@ def _input_hash(context: StageContext, config: S2Config) -> str:
     )
 
 
+@dataclass(frozen=True)
+class Tracklet:
+    """One track as read back: its detections and its measured quality.
+
+    Typed rather than a raw row, because every consumer needs the same handful
+    of fields dug out of nested JSON and doing that at each call site is where
+    the ``type: ignore`` comments breed.
+    """
+
+    track_id: int
+    start_frame: int
+    end_frame: int
+    hits: int
+    quality: TrackQuality
+    detections: tuple[TrackDetection, ...]
+
+
 def load_tracks(context: StageContext) -> tuple[dict[str, object], ...]:
-    path = context.work_dir / STAGE / TRACKS_NAME
-    if not path.is_file():
-        raise FileNotFoundError(f"{path} is missing; run {STAGE} first")
+    """Raw rows, for callers that only want to look at the JSON."""
+
+    path = tracks_path(context)
     rows: list[dict[str, object]] = []
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             stripped = line.strip()
             if stripped:
-                rows.append(json.loads(stripped))
+                payload = json.loads(stripped)
+                if isinstance(payload, dict):
+                    rows.append(payload)
     return tuple(rows)
+
+
+def load_tracklets(context: StageContext) -> tuple[Tracklet, ...]:
+    """The typed form, which is what the stages after this one consume."""
+
+    tracklets: list[Tracklet] = []
+    for row in load_tracks(context):
+        raw_quality = row.get("quality")
+        if not isinstance(raw_quality, dict):
+            raise ValueError(f"track {row.get('track_id')} has no quality block")
+
+        raw_detections = row.get("detections")
+        if raw_detections is not None and not isinstance(raw_detections, list):
+            raise ValueError(f"track {row.get('track_id')} detections must be a list")
+
+        tracklets.append(
+            Tracklet(
+                track_id=int(coerce_number(row["track_id"], "track_id")),
+                start_frame=int(coerce_number(row["start_frame"], "start_frame")),
+                end_frame=int(coerce_number(row["end_frame"], "end_frame")),
+                hits=int(coerce_number(row["hits"], "hits")),
+                quality=TrackQuality.from_dict(raw_quality),
+                detections=tuple(
+                    TrackDetection.from_dict(item)
+                    for item in (raw_detections or [])
+                    if isinstance(item, dict)
+                ),
+            )
+        )
+    return tuple(tracklets)
 
 
 def tracks_path(context: StageContext) -> Path:
