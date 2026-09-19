@@ -244,11 +244,15 @@ and on one that can reach nothing at all, a wheelhouse:
 say "DiariZen (S4)"
 DIARIZEN="$ROOT/models/DiariZen"
 if [[ ! -d "$DIARIZEN" ]]; then
-    warn "no checkout at $DIARIZEN, so it is not installed and S4 cannot run."
-    warn "It is a repository rather than a package, and it is not on PyPI:"
-    warn "    scripts/setup_server.sh --stages s4-diarize"
-    warn "will clone and install it when the machine can reach GitHub, and"
-    warn "docs/server-setup.md covers the case where it cannot."
+    warn "no checkout at $DIARIZEN, so S4 cannot run yet."
+    warn "DiariZen is a repository rather than a package and is not on PyPI,"
+    warn "so it has to exist before this script can install it.  Two ways:"
+    warn "    scripts/download_models.sh     fetches it, on a machine that"
+    warn "                                   cannot reach GitHub"
+    warn "    scripts/setup_server.sh --stages s4-diarize    clones it, on one"
+    warn "                                   that can"
+    warn "Either way, run this script again afterwards -- it is idempotent, and"
+    warn "everything except DiariZen will already be installed."
 elif ! "$PY" -c "import diarizen" >/dev/null 2>&1; then
     note "installing from $DIARIZEN"
     # Its own order: requirements, then the package, then the vendored

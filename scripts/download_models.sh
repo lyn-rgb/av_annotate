@@ -541,6 +541,38 @@ if wants s4-diarize; then
         note "       (falling back to the Hugging Face mirror)"
         fetch_hf "BUT-FIT/diarizen-wavlm-large-s80-md-v2" "the checkpoint"
     fi
+    # And the repository itself, out of the same upload.  DiariZen is not a
+    # package and is not on PyPI, so setup_server.sh clones it from GitHub --
+    # which is the one thing that cannot be done on the network this script
+    # exists for.  The upload carries DiariZen-main.zip, so the clone is not
+    # needed here either.
+    #
+    # Extracted with Python rather than `unzip`, which a slim server image does
+    # not necessarily have and which is a silly thing to fail on.
+    if [[ -d "$MODELS/DiariZen/diarizen" ]]; then
+        note "DiariZen is already at $MODELS/DiariZen"
+    elif ms_file "lvzepeng4youcash/DiariZen" "DiariZen-main.zip" \
+        "$MODELS/DiariZen-main.zip" 1000000 "the DiariZen repository"; then
+        note "extracting $MODELS/DiariZen-main.zip"
+        "$PYTHON" - "$MODELS/DiariZen-main.zip" "$MODELS/DiariZen" <<'PYEOF'
+import shutil, sys, zipfile
+from pathlib import Path
+
+archive, dest = Path(sys.argv[1]), Path(sys.argv[2])
+dest.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(archive) as zf:
+    zf.extractall(dest)
+
+# GitHub archives wrap everything in one top-level directory, and everything
+# here expects the checkout at the path itself.
+inner = [p for p in dest.iterdir() if p.is_dir()]
+if len(inner) == 1 and not (dest / "diarizen").exists():
+    for item in inner[0].iterdir():
+        shutil.move(str(item), str(dest / item.name))
+    inner[0].rmdir()
+print(f"   {len(list((dest / 'diarizen').rglob('*.py')))} python files under diarizen/")
+PYEOF
+    fi
     # Pulled by DiariZen's own code alongside the checkpoint, so it is easy to
     # miss when counting what has to be available offline.
     fetch_checkpoint "pyannote/wespeaker-voxceleb-resnet34-LM" "its embedding model"
@@ -552,6 +584,22 @@ fi
 
 if wants s5-asd; then
     say "S5: LoCoNet"
+    # The checkout first, because it is the other half of S5 and it is the one
+    # thing in this whole script with no source here at all: not on ModelScope
+    # under any spelling, `gitclone.com` serves an empty repository for it, the
+    # gitee and gitcode GitHub mirrors 404 and 405, and the CDNs that could
+    # serve a repository's files are abroad like everything else.  It is carried,
+    # and this says so rather than leaving it to setup_server.sh to fail on a
+    # clone.
+    if [[ -f "$MODELS/loconet/LoCoNet_ASD/loconet.py" ]]; then
+        note "checkout already at $MODELS/loconet/LoCoNet_ASD"
+    else
+        bad "The LoCoNet checkout is missing and cannot be fetched here."
+        bad "  It has no mirror: carry it from a machine that can clone"
+        bad "  https://github.com/SJTUwxz/LoCoNet_ASD and put it at"
+        bad "    $MODELS/loconet/LoCoNet_ASD"
+        FAILED+=("LoCoNet_ASD (carry by hand)")
+    fi
     if [[ -f "$MODELS/loconet/loconet_AVA.model" ]]; then
         note "loconet_AVA.model already at $MODELS/loconet/"
     else

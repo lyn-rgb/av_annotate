@@ -1,15 +1,33 @@
 #!/usr/bin/env bash
 #
-# One archive to carry the whole thing to a server: the code, the configs, the
-# scripts, and every model weight.
+# One archive to carry the pipeline to a server.
 #
-#   scripts/make_transfer_zip.sh [--out FILE]
+#   scripts/make_transfer_zip.sh [--out FILE] [--minimal]
 #
 #   --out FILE   where to write it (default: ../avannotate-transfer.zip)
+#   --minimal    carry only what the server cannot fetch for itself (~170 MB
+#                rather than ~26 GB); run download_models.sh there for the rest
 #
 # The default destination is outside the checkout on purpose.  An archive
 # written into the thing it is archiving gets included in the next one, and a
 # 22 GB file inside a 22 GB file is a mistake that only shows up once.
+#
+# --minimal is usually the right one.  Every checkpoint except two is on
+# ModelScope, which download_models.sh fetches from directly on the machine
+# that needs it -- and fetching 26 GB there is better than uploading 26 GB
+# here, because an upload that fails at 90% costs the whole thing while a
+# download that fails resumes.  What cannot be fetched is small:
+#
+#   models/loconet/loconet_AVA.model   Google Drive only.  Not on ModelScope
+#                                      under any spelling and not on Hugging
+#                                      Face either -- the HF repo that looks
+#                                      like it might carry it is a model card
+#                                      pointing back at the same Drive link.
+#   models/loconet/LoCoNet_ASD/        no mirror anywhere; see download_models.sh
+#   models/yunet.onnx                  a GitHub release asset; ModelScope has
+#                                      only a LiteRT conversion of it
+#
+# Those three are about 170 MB together, which is the whole point.
 #
 # What is left out, and why each is not "necessary content":
 #
@@ -38,17 +56,28 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="$(cd "$ROOT/.." && pwd)/avannotate-transfer.zip"
 PYTHON="${PYTHON:-python3}"
 [[ -x "$ROOT/.venv/bin/python" ]] && PYTHON="$ROOT/.venv/bin/python"
+MODE="full"
+OUT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) OUT="$2"; shift 2 ;;
-        -h|--help) sed -n '2,22p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --minimal) MODE="minimal"; shift ;;
+        -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+# Named for what it holds, so building one does not quietly overwrite the other.
+if [[ -z "$OUT" ]]; then
+    if [[ "$MODE" == "minimal" ]]; then
+        OUT="$(cd "$ROOT/.." && pwd)/avannotate-minimal.zip"
+    else
+        OUT="$(cd "$ROOT/.." && pwd)/avannotate-transfer.zip"
+    fi
+fi
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
@@ -59,11 +88,16 @@ note "into $OUT"
 
 rm -f "$OUT"
 
-"$PYTHON" - "$ROOT" "$OUT" <<'PYEOF'
+"$PYTHON" - "$ROOT" "$OUT" "$MODE" <<'PYEOF'
 import sys, time, zipfile
 from pathlib import Path
 
-root, out = Path(sys.argv[1]), Path(sys.argv[2])
+root, out, mode = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+
+# What the server cannot fetch for itself, and therefore what --minimal carries.
+# Everything else under models/ is on ModelScope and is better downloaded there:
+# a download resumes, a failed upload does not.
+CARRY = ("models/loconet", "models/yunet.onnx")
 
 # Skipped by any path component, so a rule holds however deep the match is.
 # `.egg-info` is matched as a suffix rather than a name because the directory is
@@ -92,6 +126,11 @@ TEXT_SUFFIXES = {".py", ".json", ".jsonl", ".md", ".txt", ".toml", ".sh",
 STORE_OVER = 8 * 1024 * 1024
 
 
+def carried(relative: Path) -> bool:
+    text = str(relative)
+    return any(text == item or text.startswith(item + "/") for item in CARRY)
+
+
 def wanted(path: Path) -> bool:
     rel = path.relative_to(root)
     if excluded(rel):
@@ -99,6 +138,8 @@ def wanted(path: Path) -> bool:
     if str(rel) in EXCLUDE_NAMES or path.name in EXCLUDE_NAMES:
         return False
     if path.suffix in EXCLUDE_SUFFIXES:
+        return False
+    if mode == "minimal" and rel.parts[0] == "models" and not carried(rel):
         return False
     return path.is_file() and not path.is_symlink()
 
@@ -184,8 +225,39 @@ say "what to do with it"
 cat <<EOF
 
     scp $(basename "$OUT") server:~/
-    ssh server 'unzip -q ~/$(basename "$OUT") -d ~/ && cd ~/avannotate && ls'
+    ssh server 'unzip -q ~/$(basename "$OUT") -d ~/ && cd ~/avannotate'
 
+EOF
+
+if [[ "$MODE" == "minimal" ]]; then
+    cat <<'EOF'
+Then, on the server, in this order:
+
+    scripts/setup_venv.sh --gpus 4      # the environment
+    scripts/download_models.sh          # ~26 GB, from ModelScope
+    scripts/setup_venv.sh --gpus 4      # again, for DiariZen
+
+The third command looks redundant and is not, which is worth explaining.
+DiariZen is a repository rather than a package, so setup_venv.sh installs it
+from models/DiariZen -- and on a fresh server that directory does not exist
+until download_models.sh puts it there.  The second run is fast: everything
+else is already installed, so it only builds DiariZen.
+
+Both scripts are idempotent, which is also what makes them safe to re-run
+after a download that stopped part way through.
+
+download_models.sh is where every weight comes from, so nothing large needed
+uploading; the two things with no source anywhere -- the LoCoNet weights and
+its checkout -- are in this archive, which is the only reason it is 162 MB
+rather than a megabyte.
+
+Finally:
+
+    python -m avannotate.cli doctor --configs-dir configs
+
+EOF
+else
+    cat <<'EOF'
 Then, on the server:
 
     scripts/setup_venv.sh --gpus 4
@@ -195,3 +267,4 @@ download_models.sh has nothing left to fetch, and setup_server.sh's clones are
 unnecessary because both checkouts travelled inside this archive.
 
 EOF
+fi
