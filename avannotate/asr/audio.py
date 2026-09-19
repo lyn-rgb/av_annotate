@@ -1,15 +1,9 @@
 """Reading the span of audio a segment's transcript should come from.
 
 Thin, because :mod:`avannotate.audio.wav` already defines what "a window of
-audio" means and S7 already writes one file per segment.  What is left is the
-one thing that cannot be got wrong quietly: the sample rate.
-
-A recogniser assumes 16 kHz.  Handed 8 kHz audio without being told, it does not
-fail -- it transcribes the wrong frequencies against the wrong time base and
-returns timestamps at half scale, so every word lands in the wrong place and
-reads plausibly while doing it.  So the rate is checked here and a mismatch is
-an error, not something to resample past: both sources are known to be 16 kHz
-by construction, and a file that is not means something upstream has changed.
+audio" means, refuses a file at the wrong sample rate, and S7 already writes one
+file per segment.  What is left is turning a segment's relative path and its two
+origins into a window.
 """
 
 from __future__ import annotations
@@ -20,11 +14,16 @@ import numpy as np
 from numpy.typing import NDArray
 
 from avannotate.asr.types import SegmentSource
-from avannotate.audio.wav import read_info, read_window
+from avannotate.audio.wav import WavError, read_mono
 
 
-class AsrAudioError(ValueError):
-    """The audio a segment points at is not the audio a recogniser can take."""
+class AsrAudioError(WavError):
+    """The audio a segment points at is not the audio a recogniser can take.
+
+    A :class:`WavError` so that a caller has one exception to catch for anything
+    wrong with an audio file -- a missing one, a malformed one, or one at a rate
+    that would silently shift every timestamp.
+    """
 
 
 def read_source(
@@ -47,15 +46,11 @@ def read_source(
             f"(source: {source.source})"
         )
 
-    rate, _ = read_info(path)
-    if rate != sample_rate:
-        raise AsrAudioError(
-            f"{path} is {rate} Hz but the recogniser takes {sample_rate} Hz; "
-            "transcribing it anyway would put every timestamp at the wrong scale"
-        )
-
-    samples = read_window(
-        path, start_seconds=source.seek, duration_seconds=source.duration
+    samples = read_mono(
+        path,
+        start_seconds=source.seek,
+        duration_seconds=source.duration,
+        sample_rate=sample_rate,
     )
     if len(samples) == 0:
         raise AsrAudioError(

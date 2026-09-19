@@ -61,7 +61,7 @@ class ClearerVoiceExtractor:
 
     def __init__(self, *, model_name: str = MODEL_NAME, device: str | None = None) -> None:
         try:
-            from clearvoice import ClearVoice  # type: ignore[import-not-found]
+            from clearvoice import ClearVoice
         except ModuleNotFoundError as error:
             raise TseError(
                 "ClearerVoice is required for this stage: pip install clearvoice. "

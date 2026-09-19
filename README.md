@@ -50,6 +50,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/asd/` | windowing, face crops, and prediction stitching |
 | `avannotate/tse/` | segment planning, the face-track crop video, the extractor |
 | `avannotate/asr/` | source routing, the language vote, words, the recogniser |
+| `avannotate/paralinguistic/` | the tag vocabulary, three models, one tag |
 | `avannotate/stages/base.py` | contexts, artifacts, and the resume record |
 | `avannotate/stages/s0_preprocess.py` | S0 — probe, demux, shot boundaries |
 | `avannotate/stages/s1_faces.py` | S1 — face detection and identity vectors |
@@ -60,6 +61,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s6_associate.py` | S6 — which face each speaker is |
 | `avannotate/stages/s7_tse.py` | S7 — one person's voice, one file per segment |
 | `avannotate/stages/s8_asr.py` | S8 — what each person said, and when |
+| `avannotate/stages/s9_paralinguistic.py` | S9 — how each line was said |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -70,18 +72,18 @@ what makes it testable without a model or a GPU.
 Implemented and tested: **S0 (probe, audio, shots)**, **S1 (detection +
 embeddings)**, **S2 (tracking)**, **S3 (identity clustering)**, **S4
 (diarization)**, **S5 (active speaker detection)**, **S6 (association)**,
-**S7 (target-speaker extraction)** and **S8 (ASR)**, plus the deliverable
-format, segmentation, and the QA gates. 483 tests.
+**S7 (target-speaker extraction)**, **S8 (ASR)** and **S9 (paralinguistic
+tagging)**, plus the deliverable format, segmentation, and the QA gates.
+554 tests.
 
-Not yet implemented: S9–S11 — paralinguistic tagging, captioning, and the
-compose step — plus the batch driver. See the plan for the stage DAG and model
-choices.
+Not yet implemented: S10 (captioning) and S11 (compose), plus the batch driver.
+See the plan for the stage DAG and model choices.
 
-**S4, S5, S7 and S8 need GPUs and packages that are not installed here.** Their
-model adapters are written against documented interfaces and could not be run;
-each names in its own docstring what to verify first. Everything that decides
-what goes into a model pass, and what its output means, is separate, pure, and
-tested.
+**S4, S5, S7, S8 and S9 need GPUs and packages that are not installed here.**
+Their model adapters are written against documented interfaces and could not be
+run; each names in its own docstring what to verify first. Everything that
+decides what goes into a model pass, and what its output means, is separate,
+pure, and tested.
 
 ### Running it
 
@@ -103,6 +105,8 @@ avannotate run --stage s7-tse     --input data/examples.txt --output ./outputs \
     --config configs/s7.clearvoice.json
 avannotate run --stage s8-asr     --input data/examples.txt --output ./outputs \
     --config configs/s8.whisper.json
+avannotate run --stage s9-paralinguistic --input data/examples.txt --output ./outputs \
+    --config configs/s9.paralinguistic.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -240,6 +244,56 @@ Three consequences worth stating:
   `low_confidence`, `repetition` are the published heuristics for a recogniser
   inventing text. A video where somebody whispers trips them throughout and is
   still correct, so they exist to rank videos for review, not to reject any.
+
+### S9 reduces three models to one tag, by precedence rather than by score
+
+No single model covers what the format asks for. An emotion classifier has no
+notion of *whispering*, which is how a line was produced rather than how the
+speaker felt; a voice-tagging model covers delivery but not the sounds that
+replace words entirely; a general audio tagger covers those but knows nothing
+about delivery. So all three run on every segment and one tag survives.
+
+**The order is event, then delivery, then emotion**, and it is precedence rather
+than the highest score, because the three scores are not comparable — one is a
+softmax over nine classes and the others are sigmoids over hundreds of
+independent labels. Letting the largest number win would make the priority
+between dimensions an artefact of how each model happens to be calibrated.
+
+That has a visible consequence: a dimension can win while scoring *lower*, so
+`TagChoice.margin` goes negative, and a negative margin is the case worth
+looking at — right by the rule and wrong by the numbers. The reason string says
+so explicitly.
+
+Three more things the reduction does:
+
+- **The vocabulary is closed**, and every tag is proved against the script
+  format's own pattern. A tag containing a space or a colon would not fail
+  loudly; it would be parsed as part of the spoken text, on every line it
+  appeared on. The test renders and re-parses each tag to check the claim.
+- **`neutral` is never emitted.** It is a result, not a description, and the
+  format makes the tag optional precisely so an utterance with nothing to say
+  about it renders without one. A rendered `neutral:` looks like a finding.
+- **A confident unmapped label is reported, not guessed at.** That signal is
+  meant to mean *the model is sure of something we have no word for*, so it is
+  gated on the score and excludes labels known and deliberately unused —
+  otherwise AudioSet's `Speech`, which fires on every speech segment, would make
+  the report a constant.
+
+### S9 reads the extraction; S8 reads the mix
+
+Opposite routing, for the opposite reason. S8 wants the best *fidelity*, so it
+reads the mix whenever one voice is on it. S9 wants the best *isolation*,
+because a general audio tagger listening to a mix reports what is audible rather
+than what this person did — a cough from across the room lands in the segment of
+whoever happens to be speaking, and `cough` on a line that was not coughed is a
+wrong tag nothing downstream can detect.
+
+The cost is real and is not hidden: the extraction has been through a separation
+model, and a separated voice is not a clean one. The taggers are classifiers
+rather than transcribers and tolerate that better than a recogniser, but this
+trades one error for another, so all three models' full score lists are kept in
+`tags.json` and the QA report surfaces both the count of tags per dimension and
+the close calls.
 
 ### What S1 will not do
 

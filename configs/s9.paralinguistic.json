@@ -1,0 +1,14 @@
+{
+  "backend": "three-model",
+  "dimensions": ["event", "delivery", "emotion"],
+  "device": null,
+  "download_root": null,
+  "checkpoint": null,
+  "top_k": 5,
+  "min_tag_duration": 0.50,
+  "emotion_min_score": 0.5,
+  "delivery_min_score": 0.5,
+  "event_min_score": 0.5,
+  "close_margin": 0.10,
+  "sample_rate": 16000
+}

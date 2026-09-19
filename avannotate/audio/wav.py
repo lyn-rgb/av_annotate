@@ -60,6 +60,35 @@ def read_window(
     return np.frombuffer(raw, dtype="<i2").astype(np.float32) / _PCM16_SCALE
 
 
+def read_mono(
+    path: str | Path,
+    *,
+    start_seconds: float,
+    duration_seconds: float,
+    sample_rate: int,
+) -> NDArray[np.float32]:
+    """A window of a mono PCM16 file, refusing a rate the caller did not expect.
+
+    Checked rather than resampled.  A model handed audio at the wrong rate does
+    not fail -- it interprets the samples against the wrong time base and
+    returns every timestamp at the wrong scale, which reads plausibly from the
+    outside and is the one input error nothing downstream can detect.  Both
+    producers here write 16 kHz by construction, so a file that is not means
+    something upstream has changed, and that is worth an error rather than a
+    silent resample.
+    """
+
+    rate, _ = read_info(path)
+    if rate != sample_rate:
+        raise WavError(
+            f"{path} is {rate} Hz but {sample_rate} Hz was expected; reading it "
+            "anyway would put every timestamp at the wrong scale"
+        )
+    return read_window(
+        path, start_seconds=start_seconds, duration_seconds=duration_seconds
+    )
+
+
 def write_pcm16(
     path: str | Path, samples: NDArray[np.float32], *, sample_rate: int
 ) -> Path:

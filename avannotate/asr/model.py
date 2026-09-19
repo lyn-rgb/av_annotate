@@ -123,7 +123,7 @@ class FasterWhisperTranscriber:
         condition_on_previous_text: bool = False,
     ) -> None:
         try:
-            from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+            from faster_whisper import WhisperModel
         except ModuleNotFoundError as error:
             raise AsrError(
                 "faster-whisper is required for this stage: pip install "

@@ -1,4 +1,4 @@
-"""Stage S10: turn a speaking trace into trim, silence-free utterances.
+"""Turning a speaking trace into trim, silence-free utterances.
 
 Two sources feed this.  The ASD trace says roughly where a face was talking;
 the VAD says where there is speech at all.  Intersecting them removes the ASD
@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
+from avannotate.coercion import coerce_number
 from avannotate.interval import Interval, intersect, merge
 
 
@@ -64,6 +66,59 @@ class Segment:
     @property
     def is_low_confidence(self) -> bool:
         return "short" in self.flags
+
+
+@dataclass(frozen=True)
+class SpeechSegment:
+    """One person's speech between two silences, and the file holding it.
+
+    Shared by three stages, which is why it is here rather than in a stage or a
+    package: S7 writes these, S8 transcribes them, S9 tags them.  A type two
+    packages both need does not belong to either, and leaving it in the
+    transcription package would make the tagger import the recogniser in order
+    to learn what a segment is.
+
+    ``start`` and ``end`` are video time.  ``audio`` is S7's extraction for this
+    segment -- one person, and only while they were talking -- relative to the
+    work directory, so a produced directory can be moved or handed off.
+    """
+
+    identity: str
+    name: str
+    start: float
+    end: float
+    audio: str
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+    @property
+    def interval(self) -> Interval:
+        return Interval(self.start, self.end)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "identity": self.identity,
+            "name": self.name,
+            "start": round(self.start, 4),
+            "end": round(self.end, 4),
+            "duration": round(self.duration, 4),
+            "audio": self.audio,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> SpeechSegment:
+        identity = str(payload.get("identity", "")).strip()
+        if not identity:
+            raise ValueError("a segment needs an identity")
+        return cls(
+            identity=identity,
+            name=str(payload.get("name", "")).strip(),
+            start=coerce_number(payload.get("start", 0.0), "start"),
+            end=coerce_number(payload.get("end", 0.0), "end"),
+            audio=str(payload.get("audio", "")),
+        )
 
 
 def segment_speech(
@@ -116,8 +171,20 @@ def segment_speech(
     return tuple(segments)
 
 
-def tag_eligible(segment: Segment, config: SegmentationConfig | None = None) -> bool:
-    """Whether a paralinguistic tag should be rendered for this segment."""
+class _Spanned(Protocol):
+    """Anything with a duration, which is all this rule reads."""
+
+    @property
+    def duration(self) -> float: ...
+
+
+def tag_eligible(segment: _Spanned, config: SegmentationConfig | None = None) -> bool:
+    """Whether a paralinguistic tag should be rendered for this segment.
+
+    Takes either kind of span: a bare :class:`Segment` before a transcript is
+    attached, or a :class:`SpeechSegment` after extraction has given it audio.
+    The rule is about length and nothing else, so it does not care which.
+    """
 
     active = config or SegmentationConfig()
     return segment.duration >= active.min_tag_duration

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from avannotate.coercion import coerce_number
+from avannotate.segment import SpeechSegment
 
 #: Which audio a segment's transcript came from.  The distinction is not
 #: cosmetic: it is the record of whether the recogniser heard one voice or a
@@ -24,47 +24,7 @@ from avannotate.coercion import coerce_number
 SOURCE_MIX = "mix"
 SOURCE_EXTRACTED = "extracted"
 
-
-@dataclass(frozen=True)
-class SpeechSegment:
-    """One person's speech between two silences, as S7 planned and extracted.
-
-    ``start`` and ``end`` are video time.  ``audio`` is S7's extraction for this
-    segment -- one person, and only while they were talking.
-    """
-
-    identity: str
-    name: str
-    start: float
-    end: float
-    audio: str
-
-    @property
-    def duration(self) -> float:
-        return self.end - self.start
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "identity": self.identity,
-            "name": self.name,
-            "start": round(self.start, 4),
-            "end": round(self.end, 4),
-            "duration": round(self.duration, 4),
-            "audio": self.audio,
-        }
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, object]) -> SpeechSegment:
-        name = str(payload.get("identity", "")).strip()
-        if not name:
-            raise ValueError("a segment needs an identity")
-        return cls(
-            identity=name,
-            name=str(payload.get("name", "")).strip(),
-            start=coerce_number(payload.get("start", 0.0), "start"),
-            end=coerce_number(payload.get("end", 0.0), "end"),
-            audio=str(payload.get("audio", "")),
-        )
+__all__ = ["SOURCE_EXTRACTED", "SOURCE_MIX", "SegmentSource", "TranscribedWord", "Transcription"]
 
 
 @dataclass(frozen=True)

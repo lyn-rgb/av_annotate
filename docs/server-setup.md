@@ -210,6 +210,96 @@ The cheapest end-to-end check is one video whose overlap you can hear: look at
 `transcripts.json` and confirm the segments marked `"source": "extracted"` are
 the ones where two people were talking at once.
 
+## Paralinguistic tagging (S9)
+
+Three packages, one per dimension, and each can be installed on its own:
+
+```bash
+pip install funasr modelscope          # emotion
+pip install transformers torch         # delivery
+pip install panns-inference            # events
+```
+
+### Three things about these models that are not what the docs suggest
+
+Read off the released artifacts, not recalled — each of these would otherwise
+produce a plausible wrong answer.
+
+**`laion/voice-tagging-whisper` is a generator, not a classifier.** Its Hugging
+Face tag says `audio-classification` and its `config.json` contains
+`classifier_proj_size`, but it is a `WhisperForConditionalGeneration` with no
+classification head and no `id2label`. Loading it via
+`WhisperForAudioClassification.from_pretrained` **succeeds**, attaching a
+randomly initialised head — every score it returns is noise, and nothing warns
+you. It also has **no published label set**: its own card counts "194 unique
+tags" in a sample of 570 outputs and lists only the most frequent, because a
+generator has no closed vocabulary. The adapter therefore generates a
+comma-separated string, splits on commas, and maps what it recognises through
+`vocabulary.DELIVERY_LABELS`, dropping the rest. It returns no probabilities, so
+delivery tags are recorded with a score of 1.0 (presence) and this dimension's
+`delivery_min_score` admits everything the model named.
+
+**PANNs takes 32 kHz and resamples nothing.** Its mel front end is fixed there,
+so feeding it the pipeline's 16 kHz audio does not fail — every band lands in
+the wrong place and it returns confident tags for a signal it never heard. The
+adapter resamples with `librosa` (which `panns-inference` already depends on).
+Its `inference()` returns a **2-tuple** `(clipwise, embedding)`, and the
+clipwise output is **already sigmoid-activated** — one probability per class,
+independent, summing to nothing in particular. Thresholding is this pipeline's
+to choose, which is what `event_min_score` is.
+
+**PANNs downloads its checkpoint with a shelled-out `wget`** when
+`checkpoint_path=None`, which **does nothing at all where wget is missing** and
+then fails obscurely in `torch.load`. Pre-place `Cnn14_mAP=0.431.pth` and set
+`checkpoint` in the config:
+
+```bash
+mkdir -p ~/panns_data && cd ~/panns_data
+curl -LO 'https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1' \
+  && mv 'Cnn14_mAP%3D0.431.pth?download=1' 'Cnn14_mAP=0.431.pth'
+```
+
+### The labels are matched by slug, and two are easy to get wrong
+
+Labels go through `vocabulary.slug` (lowercase, non-word runs to hyphens) before
+being looked up, because the raw strings are not usable as keys: 75 of AudioSet's
+527 labels contain a comma, and emotion2vec's are bilingual with a slash
+(`生气/angry`).
+
+Two entries were wrong in the first draft and are worth knowing about, because
+both would have silently produced no tag:
+
+- emotion2vec's neutral class is **中立**, not 中性.
+- Its ninth class is the literal string **`<unk>`**, not `unknown`. The model
+  card's prose calls it "unknown"; the runtime never says that.
+
+### What to verify on the first run
+
+1. **That the delivery model produces tags at all.** Its outputs are free text;
+   run one segment and print the raw string before it goes through the table. If
+   nothing maps, the vocabulary's spellings need extending, and
+   `summary.json`'s `unmapped` count is where that shows up.
+2. **That the three thresholds are where you want them.** They are starting
+   points, not measurements. `emotion_min_score` gates a nine-way softmax and
+   the other two gate sigmoids — different scales, so tune them separately.
+3. **That the extraction is good enough to tag.** This stage reads S7's output,
+   not the mix, so a bad separation shows up here as tags that describe the
+   wrong person. Compare a tagged segment against the mix when something looks
+   wrong.
+
+### Licences, as found rather than as assumed
+
+| component | licence | note |
+| --- | --- | --- |
+| emotion2vec+ large | Apache-2.0 **declared on ModelScope** | the HF mirror says `other` and the upstream repo has no LICENSE file; the two mirrors disagree |
+| laion/voice-tagging-whisper | Apache-2.0 declared | its base model `laion/BUD-E-Whisper` is CC-BY-4.0, so attribution is owed down the chain |
+| PANNs code | MIT | the repo, the GitHub API and the wheel metadata all agree |
+| PANNs checkpoint | **CC-BY-4.0** | Zenodo record 3987831 — attribution required for the `.pth`, separately from the code |
+
+All permissive and all fine for the non-commercial research use this project was
+built for. The emotion2vec entry is the one to re-check if the licence ever
+needs to be stated precisely, because no source reconciles the discrepancy.
+
 ## Running the pipeline
 
 ```bash
@@ -230,6 +320,8 @@ avannotate run --stage s7-tse       --input videos.txt --output ./outputs \
     --config configs/s7.clearvoice.json
 avannotate run --stage s8-asr       --input videos.txt --output ./outputs \
     --config configs/s8.whisper.json
+avannotate run --stage s9-paralinguistic --input videos.txt --output ./outputs \
+    --config configs/s9.paralinguistic.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -249,6 +341,7 @@ Measured here, on CPU, over 26 seconds of video across three clips:
 | S5 (LoCoNet) | not measured here | GPU; one pass per target per window |
 | S7 (ClearerVoice) | not measured here | GPU; scales with speaking time, not screen time |
 | S8 (faster-whisper) | not measured here | GPU; one decode per segment, so also speech-proportional |
+| S9 (three taggers) | not measured here | GPU; three passes per segment, the delivery model being a generative decode |
 
 S1 dominates and is what to profile first on real hardware. `embedding_interval_seconds`
 changes only disk, not runtime: insightface computes the vector as part of its

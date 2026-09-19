@@ -41,6 +41,16 @@ tse = [
 asr = [
     "faster-whisper>=1.0",
 ]
+# One package per tagger dimension, so a machine can run the ones it has.  The
+# `dimensions` key in the stage config says which, and a dimension that is not
+# listed is never imported.
+paralinguistic = [
+    "funasr",
+    "modelscope",
+    "transformers>=4.51",
+    "torch>=2.1",
+    "panns-inference",
+]
 caption = [
     "transformers>=4.51",
     "accelerate>=0.30",
@@ -74,7 +84,22 @@ files = ["avannotate"]
 # one with them reports `import-untyped`, and an inline ignore can only name one
 # of the two.
 [[tool.mypy.overrides]]
-module = ["diarizen.*", "torch", "torch.*", "torchaudio", "insightface.*"]
+# Everything the model adapters import lazily.  None of it is installed on a
+# development machine, which is the point: the core is pure Python and the
+# adapters are the only part that needs a GPU.
+module = [
+    "diarizen.*",
+    "torch",
+    "torch.*",
+    "torchaudio",
+    "insightface.*",
+    "clearvoice.*",
+    "faster_whisper.*",
+    "funasr.*",
+    "transformers.*",
+    "panns_inference.*",
+    "librosa.*",
+]
 ignore_missing_imports = true
 
 [build-system]

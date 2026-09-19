@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from avannotate.asr.audio import AsrAudioError, concat, read_source
+from avannotate.asr.audio import concat, read_source
 from avannotate.asr.language import collect_votes, decide, disagreements
 from avannotate.asr.plan import is_overlapping, plan_sources, window
 from avannotate.asr.text import (
@@ -34,7 +34,7 @@ from avannotate.asr.types import (
     TranscribedWord,
     Transcription,
 )
-from avannotate.audio.wav import write_pcm16
+from avannotate.audio.wav import WavError, write_pcm16
 from avannotate.interval import Interval
 from avannotate.stages import s0_preprocess, s6_associate, s7_tse, s8_asr
 from avannotate.stages.base import StageContext
@@ -412,7 +412,8 @@ def test_a_file_at_the_wrong_rate_is_an_error_not_a_resample(tmp_path: Path) -> 
 
     It transcribes the wrong frequencies against the wrong time base and
     returns timestamps at half scale, so every word lands in the wrong place
-    and reads plausibly while doing it.
+    and reads plausibly while doing it.  The check lives in the WAV layer, so
+    every stage that reads segment audio gets it.
     """
 
     path = write_pcm16(tmp_path / "eight.wav", np.zeros(8000, dtype=np.float32), sample_rate=8000)
@@ -426,7 +427,7 @@ def test_a_file_at_the_wrong_rate_is_an_error_not_a_resample(tmp_path: Path) -> 
         overlapping=False,
     )
 
-    with pytest.raises(AsrAudioError, match="8000 Hz"):
+    with pytest.raises(WavError, match="8000 Hz"):
         read_source(source, root=tmp_path, sample_rate=RATE)
 
 

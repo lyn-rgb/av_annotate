@@ -29,13 +29,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from avannotate.asr.types import (
-    SOURCE_EXTRACTED,
-    SOURCE_MIX,
-    SegmentSource,
-    SpeechSegment,
-)
+from avannotate.asr.types import SOURCE_EXTRACTED, SOURCE_MIX, SegmentSource
 from avannotate.interval import Interval
+from avannotate.segment import SpeechSegment
 
 
 def overlap_seconds(

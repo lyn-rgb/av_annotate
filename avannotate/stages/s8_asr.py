@@ -33,18 +33,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from avannotate.asr import language as language_module
-from avannotate.asr.audio import AsrAudioError, concat, read_source
+from avannotate.asr.audio import concat, read_source
 from avannotate.asr.model import AsrError, Transcriber, build_transcriber
 from avannotate.asr.plan import plan_sources
 from avannotate.asr.text import clip_to_span, hallucination_flags, join_words, offset_words
-from avannotate.asr.types import (
-    SOURCE_MIX,
-    SegmentSource,
-    SpeechSegment,
-    Transcription,
-)
+from avannotate.asr.types import SOURCE_MIX, SegmentSource, Transcription
+from avannotate.audio.wav import WavError
 from avannotate.ffmpeg import TARGET_SAMPLE_RATE
 from avannotate.schema import Language
+from avannotate.segment import SpeechSegment
 from avannotate.stages import s0_preprocess, s6_associate, s7_tse
 from avannotate.stages.base import (
     Artifact,
@@ -362,7 +359,7 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
             recognised[source.segment.name] = _transcribe(
                 context, transcriber, source, config, language=forced
             )
-    except (AsrAudioError, AsrError) as error:
+    except (WavError, AsrError) as error:
         state.save(
             StageRecord(
                 stage=STAGE,
