@@ -55,6 +55,7 @@ from avannotate.stages.base import (
     config_str,
     hash_file,
     hash_payload,
+    resolve_config_path,
     write_json,
 )
 
@@ -107,12 +108,21 @@ class S8Config:
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> S8Config:
+        # Resolved against the config file's directory, like every other path in
+        # every other stage -- see the note in s9_paralinguistic.  A raw relative
+        # path reaches faster-whisper as a cache_dir and is resolved against the
+        # working directory, which under run_batch.sh is the data root.
+        download_root = config_optional_str(mapping, "download_root")
         return cls(
             backend=config_str(mapping, "backend", "faster-whisper"),
             model=config_str(mapping, "model", "large-v3"),
             device=config_optional_str(mapping, "device"),
             compute_type=config_optional_str(mapping, "compute_type"),
-            download_root=config_optional_str(mapping, "download_root"),
+            download_root=(
+                str(resolve_config_path(download_root, mapping))
+                if download_root
+                else None
+            ),
             beam_size=config_int(mapping, "beam_size", 5),
             vad_filter=bool(mapping.get("vad_filter", False)),
             condition_on_previous_text=bool(

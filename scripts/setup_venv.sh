@@ -121,9 +121,32 @@ say "virtual environment"
 note "interpreter: $PYTHON ($PYVER)"
 note "location:    $VENV"
 
-if [[ -x "$VENV/bin/python" ]]; then
+# An existing venv is reused only if its interpreter actually runs.
+#
+# The case that matters here is a transferred one.  A .venv built on a laptop is
+# a directory of Mach-O binaries; `rsync -a` preserves the executable bit, so on
+# a Linux server `-x` is true and the file cannot be executed at all.  Checking
+# only `-x` therefore reuses a venv that cannot run, and the failures that
+# follow -- pip exiting with "exec format error", or run_batch.sh falling back to
+# the system python and reporting every package missing -- read as something
+# else entirely.
+VENV_USABLE=0
+if [[ -x "$VENV/bin/python" ]] && "$VENV/bin/python" -c 'pass' >/dev/null 2>&1; then
+    VENV_USABLE=1
     note "already exists; reusing it"
-else
+elif [[ -e "$VENV" ]]; then
+    # Moved aside, not deleted.  The directory is somebody's, it may contain
+    # more than this project put there, and the name says what happened so it
+    # is obvious later what it is and that it is safe to remove.
+    ASIDE="$VENV.broken.$(date +%Y%m%d%H%M%S)"
+    warn "$VENV exists, but its python does not run on this machine."
+    warn "That is what a venv copied from another OS looks like: the file is"
+    warn "still marked executable, so it is only obvious when you try it."
+    warn "Moving it to $(basename "$ASIDE") and building a fresh one."
+    mv "$VENV" "$ASIDE"
+fi
+
+if (( VENV_USABLE == 0 )); then
     # `python -m venv` needs the venv module, which Debian and Ubuntu ship in a
     # separate package.  The stock error for that is a wall of text about
     # ensurepip that does not name the package, so it is named here.

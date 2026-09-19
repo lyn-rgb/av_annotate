@@ -71,6 +71,20 @@ if [[ -n "$DATA" ]]; then
     cd "$DATA"
 fi
 
+# S7's extractor reads its checkpoint from a path relative to the *working
+# directory* -- hardcoded in clearvoice, with no argument to override it.  This
+# script is what chooses the working directory, so it is what has to make that
+# path exist; otherwise S7 either fails or, worse, tries to download the
+# checkpoint, which on a machine with no route to Hugging Face cannot succeed
+# and on one that has a route would quietly fetch a second copy.
+#
+# A symlink, so it costs nothing and shows up in `ls` as what it is.
+if [[ -d "$ROOT/models/clearvoice/AV_MossFormer2_TSE_16K" && ! -e checkpoint_dir/AV_MossFormer2_TSE_16K ]]; then
+    mkdir -p checkpoint_dir
+    ln -s "$ROOT/models/clearvoice/AV_MossFormer2_TSE_16K" checkpoint_dir/AV_MossFormer2_TSE_16K
+    printf '   S7 checkpoint linked into %s/checkpoint_dir/\n' "$(pwd)"
+fi
+
 mkdir -p "$OUTPUT"
 LOG="$(cd "$OUTPUT" && pwd)/batch.log"
 LIST="$(cd "$(dirname "$LIST")" && pwd)/$(basename "$LIST")"

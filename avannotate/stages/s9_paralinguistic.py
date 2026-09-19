@@ -64,6 +64,7 @@ from avannotate.stages.base import (
     config_str,
     hash_file,
     hash_payload,
+    resolve_config_path,
     write_json,
 )
 
@@ -97,12 +98,27 @@ class S9Config:
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> S9Config:
+        # Resolved against the config file's directory, like every other path in
+        # every other stage.  These two were the exception, and the difference is
+        # not cosmetic: a raw relative path is resolved by whichever library
+        # consumes it, against the *working directory* -- which under
+        # run_batch.sh is the data root, not the checkout.  So
+        # "../models/panns/Cnn14_mAP=0.431.pth", which is correct and which the
+        # downloader prints, pointed at nothing.
+        download_root = config_optional_str(mapping, "download_root")
+        checkpoint = config_optional_str(mapping, "checkpoint")
         return cls(
             backend=config_str(mapping, "backend", "three-model"),
             dimensions=_dimensions(mapping.get("dimensions")),
             device=config_optional_str(mapping, "device"),
-            download_root=config_optional_str(mapping, "download_root"),
-            checkpoint=config_optional_str(mapping, "checkpoint"),
+            download_root=(
+                str(resolve_config_path(download_root, mapping))
+                if download_root
+                else None
+            ),
+            checkpoint=(
+                str(resolve_config_path(checkpoint, mapping)) if checkpoint else None
+            ),
             top_k=config_int(mapping, "top_k", 5),
             min_tag_duration=config_float(mapping, "min_tag_duration", 0.50),
             emotion_min_score=config_float(mapping, "emotion_min_score", 0.5),
