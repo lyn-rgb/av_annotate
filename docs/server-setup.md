@@ -42,11 +42,35 @@ recording the commit each tarball came from. Nothing in it is fetched again on
 the server. Add `--with-wheels` if PyPI is out of reach too, and `--with-hf` to
 cover the Hugging Face checkpoints.
 
-Two things it deliberately does not fetch, because a script cannot: **LoCoNet's
-AVA weights**, which are behind a Google Drive link, and anything else you have
-already downloaded by hand. Drop those into `offline-bundle/models/` before
-packing and the server picks them up; `make_offline_bundle.sh` also copies
-them in automatically from `models/` if they are already there. The rest of this document is the detail behind them:
+### LoCoNet's weights: the one file that has to be carried
+
+Everything else can be re-fetched from some mirror. **`loconet_AVA.model` is
+only on Google Drive**, and a locked-down server usually has no route to it —
+so it is a file you carry, not a file you download there. 131 MB.
+
+`make_offline_bundle.sh` finds it in either of two ways, in order:
+
+1. **Already on the bundle machine**, at `models/loconet/loconet_AVA.model` —
+   the path `configs/s5.loconet.json` expects, so if you downloaded it there it
+   is copied in with no argument.
+2. **`gdown`** (`pip install gdown`), which fetches it by file id from the
+   Drive link in the repository's README.
+
+Either way what lands in the bundle is **checked before packing**: that it is a
+torch state dict, and that its keys begin `model.module.` the way the release
+does. That check earns its place — a Drive download that hits a quota or a
+sign-in page returns *HTML with status 200*, and `gdown` saves it without
+complaint. Without the check you get a 2 KB web page with a `.model` extension
+that fails on the server instead of on the machine where you could still fix it.
+
+If neither route works on the bundle machine, carry the file by hand:
+
+```bash
+# anywhere with a browser, then
+scp loconet_AVA.model server:/path/to/models/loconet/
+```
+
+The server is then done with it: nothing at run time reaches Google Drive. The rest of this document is the detail behind them:
 what each model needs, what could not be verified without a GPU, and what to
 check on the first run of each.
 

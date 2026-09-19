@@ -216,18 +216,86 @@ else
     rm -f "$OUT/models/Cnn14_mAP=0.431.pth"
 fi
 
-# Copied, not fetched: this one is behind a Google Drive link and needs a
-# browser.  Taken from the layout the configs already expect.
+# LoCoNet's weights.  Google Drive, which needs either a browser or `gdown` --
+# and a server very often has a route to neither, which is the whole reason
+# this bundle exists.  Tried in order: the file if you already have it, then
+# gdown, then a note saying what to do by hand.
+LOCONET_GDRIVE_ID="1EX-V464jCD6S-wg68yGuAa-UcsMrw8mK"
+
+verify_loconet() {
+    # A Google Drive download that hits a quota or a "confirm you are not a
+    # robot" page returns *HTML with status 200*, and gdown saves it happily.
+    # The file is then 2 KB of markup with a .model extension, and nothing
+    # complains until S5 tries to load it on the server.  Checking that it is a
+    # torch state dict with the keys this model has is the difference between
+    # finding that here and finding it there.
+    "$PYTHON" - "$1" <<'PYEOF'
+import sys
+try:
+    import torch
+except ModuleNotFoundError:
+    sys.exit(0)  # cannot check without torch; not a reason to fail
+path = sys.argv[1]
+
+# Checked before torch sees it.  A Google Drive download that hits a quota or a
+# "confirm you are not a robot" page is *HTML with status 200*, and gdown saves
+# it without complaint -- and torch's complaint is several lines of
+# weights_only essay that buries the actual reason.
+with open(path, "rb") as handle:
+    head = handle.read(512).lstrip()
+if head[:1] == b"<" or head[:15].lower().startswith(b"<!doctype html"):
+    raise SystemExit(
+        "this is an HTML page, not a checkpoint -- the download returned a "
+        "Google Drive quota or sign-in page instead of the file"
+    )
+
+try:
+    state = torch.load(path, map_location="cpu")
+except Exception as error:
+    first = str(error).splitlines()[0]
+    raise SystemExit(f"not a torch checkpoint: {type(error).__name__}: {first}")
+if not isinstance(state, dict):
+    raise SystemExit(f"expected a state dict, got {type(state).__name__}")
+keys = [k for k in state if k.startswith("model.module.")]
+if not keys:
+    raise SystemExit(
+        "no 'model.module.' keys -- this is a torch file but not the LoCoNet "
+        f"release. First keys: {sorted(state)[:3]}"
+    )
+print(f"   verified: {len(state)} keys, all under model.module.")
+PYEOF
+}
+
 for candidate in "$MANUAL_DIR/loconet/loconet_AVA.model" "$MANUAL_DIR/loconet_AVA.model"; do
     if [[ -f "$candidate" ]]; then
         cp "$candidate" "$OUT/models/loconet_AVA.model"
-        note "models/loconet_AVA.model: $(( $(wc -c < "$OUT/models/loconet_AVA.model") / 1024 / 1024 )) MB (copied from $candidate)"
+        note "models/loconet_AVA.model: copied from $candidate"
         break
     fi
 done
+
 if [[ ! -f "$OUT/models/loconet_AVA.model" ]]; then
-    warn "no LoCoNet checkpoint found under $MANUAL_DIR; S5 will not run until it is"
-    warn "carried over by hand (Google Drive -> $OUT/models/loconet_AVA.model)"
+    if "$PYTHON" -c "import gdown" >/dev/null 2>&1; then
+        note "fetching LoCoNet's weights from Google Drive with gdown"
+        "$PYTHON" -m gdown --id "$LOCONET_GDRIVE_ID" \
+            -O "$OUT/models/loconet_AVA.model" >/dev/null 2>&1 || true
+    else
+        warn "gdown is not installed, so the Google Drive file cannot be fetched here"
+        warn "    pip install gdown   (then re-run this script)"
+    fi
+fi
+
+if [[ -f "$OUT/models/loconet_AVA.model" ]]; then
+    note "$(( $(wc -c < "$OUT/models/loconet_AVA.model") / 1024 / 1024 )) MB"
+    verify_loconet "$OUT/models/loconet_AVA.model" \
+        || die "models/loconet_AVA.model is not the released checkpoint (see above).
+Download it in a browser from the repository README, or delete it and re-run."
+else
+    warn "LoCoNet's weights are NOT in this bundle, and S5 will not run without them."
+    warn "They are behind a Google Drive link in the repository's README.  On a"
+    warn "machine that can open it, save the file as:"
+    warn "    $MANUAL_DIR/loconet/loconet_AVA.model"
+    warn "and re-run this script -- it will be copied in."
 fi
 
 # --------------------------------------------------------------------------- #

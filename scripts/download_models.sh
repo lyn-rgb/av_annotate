@@ -18,12 +18,14 @@
 # Where a model exists on ModelScope it is taken from there instead --
 # emotion2vec is a ModelScope model first and a Hugging Face mirror second.
 #
-# What this does NOT fetch, because no script can: LoCoNet's AVA weights, which
-# are behind a Google Drive link and need a browser.  It says so at the end.
+# LoCoNet's AVA weights are on Google Drive, which a locked-down server usually
+# cannot reach.  `gdown` is tried, and if that fails the file has to be carried:
+# it exists nowhere else.  That is said plainly rather than as a footnote,
+# because it is the one model file a server cannot get for itself.
 #
 # Verified: the layout it produces is the one `configs/` names, so `doctor`
 # passes afterwards.  The downloads themselves are unverified here -- this
-# machine has no route to either mirror.
+# machine has no route to any of these hosts.
 
 set -euo pipefail
 
@@ -32,6 +34,10 @@ MODELS="$ROOT/models"
 ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 ONLY="all"
 PYTHON="${PYTHON:-python3}"
+
+# The Drive file id from the repository's README.  gdown takes the id, not the
+# share URL, and the URL is the only thing the README publishes.
+LOCONET_GDRIVE_ID="1EX-V464jCD6S-wg68yGuAa-UcsMrw8mK"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -161,11 +167,29 @@ if wants s5-asd; then
     if [[ -f "$MODELS/loconet/loconet_AVA.model" ]]; then
         note "loconet_AVA.model already at $MODELS/loconet/"
     else
-        bad "loconet_AVA.model is NOT here and cannot be fetched by a script:"
-        bad "  it is behind a Google Drive link in the repository's README."
-        bad "  Download it in a browser and save it to:"
-        bad "  $MODELS/loconet/loconet_AVA.model"
-        FAILED+=("loconet_AVA.model (manual: Google Drive)")
+        # Google Drive, which a locked-down server usually cannot reach.  gdown
+        # is tried because it costs nothing; failing that the file has to be
+        # carried, and that is worth saying plainly rather than as a footnote.
+        if "$PYTHON" -c "import gdown" >/dev/null 2>&1; then
+            printf '   %-46s ' "loconet_AVA.model"
+            if "$PYTHON" -m gdown --id "$LOCONET_GDRIVE_ID" \
+                -O "$MODELS/loconet/loconet_AVA.model" >/dev/null 2>&1 \
+                && [[ -s "$MODELS/loconet/loconet_AVA.model" ]]; then
+                echo "ok   (from Google Drive)"
+            else
+                echo "FAIL (Google Drive)"
+                rm -f "$MODELS/loconet/loconet_AVA.model"
+                FAILED+=("loconet_AVA.model (Google Drive unreachable)")
+            fi
+        else
+            bad "loconet_AVA.model is not here, and gdown is not installed to fetch it."
+        fi
+        if [[ ! -s "$MODELS/loconet/loconet_AVA.model" ]]; then
+            bad "  It exists only on Google Drive -- carry it from a machine that"
+            bad "  can open the repository's README link, or put it in a bundle:"
+            bad "    $MODELS/loconet/loconet_AVA.model"
+            FAILED+=("loconet_AVA.model (carry by hand)")
+        fi
     fi
     # 275 MB from a GitHub release, and unnecessary: LoCoNet's checkpoint
     # contains these weights verbatim under "audioEncoder", and setup_server.sh
