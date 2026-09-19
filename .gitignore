@@ -8,6 +8,13 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Build artifacts.  setup_venv.sh installs the project from this directory
+# rather than from a copy of it, so pip leaves these beside the source every
+# time it runs -- and it runs on every server, which would make them the first
+# thing in everyone's `git status`.
+build/
+*.egg-info/
+
 # Pipeline output. Stages write here; none of it is source.
 /outputs/
 /work/

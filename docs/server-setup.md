@@ -1,12 +1,33 @@
 # Server setup
 
 ```bash
-scripts/setup_server.sh      # clones, installs, fetches what it can
+scripts/setup_venv.sh        # the virtualenv, and every package in it
+scripts/setup_server.sh      # the two repository checkouts, and what they need
 scripts/download_models.sh   # every model, into ./models
 avannotate doctor            # says what is still missing, and how to fix it
 ```
 
-Those three are the setup. **`download_models.sh` tries ModelScope before the
+Those four are the setup, in that order.  `setup_venv.sh` is the one to run on a
+fresh GPU box: it creates `./.venv` -- which is the path `run_batch.sh` and
+`download_models.sh` already look for -- installs torch ahead of everything that
+depends on it, installs the pipeline and every runtime extra, installs DiariZen
+if its checkout is present, and then checks that the environment can actually
+see the cards rather than just that pip exited zero:
+
+```bash
+scripts/setup_venv.sh --gpus 4
+```
+
+The checks are the point.  Two failures on a GPU box are silent rather than
+loud -- a CPU-only torch wheel, and `onnxruntime-gpu` installed without a
+matching cuDNN, which falls back to the CPU provider and makes S1/S3 about ten
+times slower with nothing saying so.  Both are reported explicitly, along with
+each card's compute capability and the architectures the wheel has kernels for.
+It also skips torch entirely when nothing in the requested extras needs it --
+`--extras asr` is CTranslate2 only, and 2.5 GB of CUDA libraries for a stage
+that never calls them is a waste worth avoiding.
+
+**`download_models.sh` tries ModelScope before the
 Hugging Face mirror**, and writes what it fetches into the layout
 `huggingface_hub` reads, so the repo ids in `configs/` keep resolving unchanged.
 
