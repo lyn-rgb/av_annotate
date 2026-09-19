@@ -46,11 +46,15 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/ffmpeg.py` | ffprobe, audio demux, and the shot detector |
 | `avannotate/faces/` | detection, tracking, clustering, Kalman filter |
 | `avannotate/matching.py` | assignment and box-overlap primitives |
+| `avannotate/audio/` | diarization turns and their geometry |
+| `avannotate/asd/` | windowing, face crops, and prediction stitching |
 | `avannotate/stages/base.py` | contexts, artifacts, and the resume record |
 | `avannotate/stages/s0_preprocess.py` | S0 — probe, demux, shot boundaries |
 | `avannotate/stages/s1_faces.py` | S1 — face detection and identity vectors |
 | `avannotate/stages/s2_tracks.py` | S2 — detection-to-tracklet association |
 | `avannotate/stages/s3_cluster.py` | S3 — tracklets to numbered people |
+| `avannotate/stages/s4_diarize.py` | S4 — who spoke when |
+| `avannotate/stages/s5_asd.py` | S5 — which face is talking |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -59,13 +63,19 @@ what makes it testable without a model or a GPU.
 ## Status
 
 Implemented and tested: **S0 (probe, audio, shots)**, **S1 (detection +
-embeddings)**, **S2 (tracking)** and **S3 (identity clustering)**, plus the
-deliverable format, face/speaker assignment, segmentation, and the QA gates.
-279 tests.
+embeddings)**, **S2 (tracking)**, **S3 (identity clustering)**, **S4
+(diarization)** and **S5 (active speaker detection)**, plus the deliverable
+format, face/speaker assignment, segmentation, and the QA gates. 388 tests.
 
-Not yet implemented: S4–S11 — diarization, ASD, target-speaker extraction, ASR,
-paralinguistic tagging, captioning, and the compose step — plus the batch driver.
-See the plan for the stage DAG and model choices.
+Not yet implemented: S6–S11 — association, target-speaker extraction, ASR,
+paralinguistic tagging, captioning, and the compose step — plus the batch
+driver. See the plan for the stage DAG and model choices.
+
+**S4 and S5 need GPUs and packages that are not installed here.** Their model
+adapters are written against documented interfaces and could not be run; each
+names in its own docstring what to verify first. Everything that decides what
+goes into a model pass, and what its output means, is separate, pure, and
+tested.
 
 ### Running it
 
@@ -77,6 +87,10 @@ avannotate run --stage s2-tracks --input data/examples.txt --output ./outputs \
     --config configs/s2.default.json
 avannotate run --stage s3-cluster --input data/examples.txt --output ./outputs \
     --config configs/s3.default.json
+avannotate run --stage s4-diarize --input data/examples.txt --output ./outputs \
+    --config configs/s4.diarizen.json
+avannotate run --stage s5-asd     --input data/examples.txt --output ./outputs \
+    --config configs/s5.loconet.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun

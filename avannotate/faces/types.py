@@ -15,24 +15,11 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from avannotate.coercion import coerce_number
+
 #: An RGB frame, as :mod:`avannotate.faces.frames` decodes it and
 #: :mod:`avannotate.faces.detect` consumes it.
 Frame = NDArray[np.uint8]
-
-
-def coerce_number(value: object, field: str) -> float:
-    """Coerce a JSON scalar, rejecting booleans and anything non-numeric.
-
-    Public because the stages read numbers back out of JSON too, and a bare
-    ``float(payload["x"])`` there loses the type without explaining why.
-    """
-
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        raise ValueError(f"{field} must be a number, got {type(value).__name__}")
-    try:
-        return float(value)
-    except ValueError as error:
-        raise ValueError(f"{field} is not a number: {value!r}") from error
 
 
 def _points(value: object, field: str) -> tuple[tuple[float, float], ...]:

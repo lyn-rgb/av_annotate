@@ -1,0 +1,12 @@
+{
+  "backend": "loconet",
+  "checkpoint": "../models/loconet/loconet_AVA.model",
+  "repo": "../models/loconet/LoCoNet_ASD",
+  "device": "cuda",
+  "window_seconds": 8.0,
+  "overlap_seconds": 1.0,
+  "max_window_frames": 200,
+  "max_speakers": 3,
+  "margin": 0.40,
+  "crop_size": 112
+}

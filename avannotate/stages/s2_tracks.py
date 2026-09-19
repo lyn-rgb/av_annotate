@@ -36,10 +36,10 @@ from avannotate.faces.track import (
     Track,
     TrackDetection,
     TrackerConfig,
+    Tracklet,
     TrackQuality,
     track_detections,
 )
-from avannotate.faces.types import coerce_number
 from avannotate.stages import s0_preprocess, s1_faces
 from avannotate.stages.base import (
     Artifact,
@@ -246,23 +246,6 @@ def _input_hash(context: StageContext, config: S2Config) -> str:
     )
 
 
-@dataclass(frozen=True)
-class Tracklet:
-    """One track as read back: its detections and its measured quality.
-
-    Typed rather than a raw row, because every consumer needs the same handful
-    of fields dug out of nested JSON and doing that at each call site is where
-    the ``type: ignore`` comments breed.
-    """
-
-    track_id: int
-    start_frame: int
-    end_frame: int
-    hits: int
-    quality: TrackQuality
-    detections: tuple[TrackDetection, ...]
-
-
 def load_tracks(context: StageContext) -> tuple[dict[str, object], ...]:
     """Raw rows, for callers that only want to look at the JSON."""
 
@@ -278,34 +261,35 @@ def load_tracks(context: StageContext) -> tuple[dict[str, object], ...]:
     return tuple(rows)
 
 
+def tracklet_from_row(row: Mapping[str, object]) -> Tracklet:
+    """Rebuild one typed tracklet from its JSON row."""
+
+    raw_quality = row.get("quality")
+    if not isinstance(raw_quality, dict):
+        raise ValueError(f"track {row.get('track_id')} has no quality block")
+
+    raw_detections = row.get("detections")
+    if raw_detections is not None and not isinstance(raw_detections, list):
+        raise ValueError(f"track {row.get('track_id')} detections must be a list")
+
+    return Tracklet(
+        track_id=int(float(str(row["track_id"]))),
+        start_frame=int(float(str(row["start_frame"]))),
+        end_frame=int(float(str(row["end_frame"]))),
+        hits=int(float(str(row["hits"]))),
+        quality=TrackQuality.from_dict(raw_quality),
+        detections=tuple(
+            TrackDetection.from_dict(item)
+            for item in (raw_detections or [])
+            if isinstance(item, dict)
+        ),
+    )
+
+
 def load_tracklets(context: StageContext) -> tuple[Tracklet, ...]:
     """The typed form, which is what the stages after this one consume."""
 
-    tracklets: list[Tracklet] = []
-    for row in load_tracks(context):
-        raw_quality = row.get("quality")
-        if not isinstance(raw_quality, dict):
-            raise ValueError(f"track {row.get('track_id')} has no quality block")
-
-        raw_detections = row.get("detections")
-        if raw_detections is not None and not isinstance(raw_detections, list):
-            raise ValueError(f"track {row.get('track_id')} detections must be a list")
-
-        tracklets.append(
-            Tracklet(
-                track_id=int(coerce_number(row["track_id"], "track_id")),
-                start_frame=int(coerce_number(row["start_frame"], "start_frame")),
-                end_frame=int(coerce_number(row["end_frame"], "end_frame")),
-                hits=int(coerce_number(row["hits"], "hits")),
-                quality=TrackQuality.from_dict(raw_quality),
-                detections=tuple(
-                    TrackDetection.from_dict(item)
-                    for item in (raw_detections or [])
-                    if isinstance(item, dict)
-                ),
-            )
-        )
-    return tuple(tracklets)
+    return tuple(tracklet_from_row(row) for row in load_tracks(context))
 
 
 def tracks_path(context: StageContext) -> Path:

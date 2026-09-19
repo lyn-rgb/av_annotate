@@ -22,8 +22,9 @@ from enum import Enum
 
 import numpy as np
 
+from avannotate.coercion import coerce_number
 from avannotate.faces.kalman import KalmanFilter, Matrix, Vector
-from avannotate.faces.types import Detection, FrameDetections, coerce_number
+from avannotate.faces.types import Detection, FrameDetections
 from avannotate.matching import Box, iou_distance, linear_assignment
 
 
@@ -170,6 +171,35 @@ class Track:
 
     def mark_removed(self) -> None:
         self.state = TrackState.REMOVED
+
+
+@dataclass(frozen=True)
+class Tracklet:
+    """A track as read back: its detections and its measured quality.
+
+    Typed rather than a raw JSON row, because every consumer needs the same
+    handful of fields and digging them out at each call site is where
+    ``type: ignore`` comments breed.
+
+    Defined here rather than in the stage that writes it: ASD and clustering
+    both take these, and importing a stage from a model module would make the
+    stage package a dependency of everything.
+    """
+
+    track_id: int
+    start_frame: int
+    end_frame: int
+    hits: int
+    quality: TrackQuality
+    detections: tuple[TrackDetection, ...]
+
+    @property
+    def first_time(self) -> float:
+        return self.detections[0].time if self.detections else 0.0
+
+    @property
+    def last_time(self) -> float:
+        return self.detections[-1].time if self.detections else 0.0
 
 
 @dataclass(frozen=True)

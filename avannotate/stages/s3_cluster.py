@@ -27,7 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from avannotate.faces.cluster import DEFAULT_MAX_DISTANCE, cluster_vectors
-from avannotate.faces.track import TrackQuality
+from avannotate.faces.track import Tracklet, TrackQuality
 from avannotate.stages import s1_faces, s2_tracks
 from avannotate.stages.base import (
     Artifact,
@@ -41,7 +41,6 @@ from avannotate.stages.base import (
     hash_payload,
     write_json,
 )
-from avannotate.stages.s2_tracks import Tracklet
 
 STAGE = "s3-cluster"
 VERSION = "s3-v1"

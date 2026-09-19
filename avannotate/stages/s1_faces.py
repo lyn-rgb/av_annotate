@@ -42,9 +42,10 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from avannotate.coercion import coerce_number
 from avannotate.faces.detect import Detector, DetectorError, build_detector
 from avannotate.faces.frames import FrameSampling, iter_frames
-from avannotate.faces.types import Detection, FrameDetections, coerce_number
+from avannotate.faces.types import Detection, FrameDetections
 from avannotate.stages import s0_preprocess
 from avannotate.stages.base import (
     Artifact,

@@ -25,6 +25,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from numpy.typing import NDArray
+
 from avannotate.ffmpeg import (
     DEFAULT_CUT_THRESHOLD,
     TARGET_CHANNELS,
@@ -279,6 +282,32 @@ def load_shots(context: StageContext) -> tuple[tuple[int, float, float], ...]:
         (int(item["index"]), float(item["start"]), float(item["end"]))
         for item in payload["shots"]
     )
+
+
+def load_audio_window(
+    context: StageContext, *, start_seconds: float, duration_seconds: float
+) -> NDArray[np.float32]:
+    """Read a span of the demuxed track as float32 in ``[-1, 1]``.
+
+    Reads from S0's own WAV rather than re-decoding the video: the file is
+    PCM16 mono at a known rate, so this is a slice and a scaling rather than a
+    second ffmpeg pass.  Clamped to the file, which is why the length returned
+    can be short at the very end.
+    """
+
+    start = max(0.0, start_seconds)
+    with wave.open(str(audio_path(context))) as handle:
+        rate = int(handle.getframerate())
+        width = int(handle.getsampwidth())
+        if width != 2:
+            raise ValueError(f"expected PCM16 audio, got {width * 8}-bit")
+        first = int(round(start * rate))
+        count = max(0, int(round(duration_seconds * rate)))
+        handle.setpos(min(first, handle.getnframes()))
+        raw = handle.readframes(count)
+
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    return samples
 
 
 def audio_path(context: StageContext) -> Path:

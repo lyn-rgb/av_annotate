@@ -31,6 +31,9 @@ diarization = [
 ]
 asd = [
     "torch>=2.1",
+    "torchaudio>=2.1",
+    "opencv-python-headless>=4.9",
+    "numpy>=1.24",
 ]
 tse = [
     "clearvoice",
@@ -71,7 +74,7 @@ files = ["avannotate"]
 # one with them reports `import-untyped`, and an inline ignore can only name one
 # of the two.
 [[tool.mypy.overrides]]
-module = ["diarizen.*", "torch", "torch.*", "insightface.*"]
+module = ["diarizen.*", "torch", "torch.*", "torchaudio", "insightface.*"]
 ignore_missing_imports = true
 
 [build-system]

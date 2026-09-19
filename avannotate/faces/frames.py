@@ -140,6 +140,82 @@ def iter_frames(
         )
 
 
+def iter_gray_window(
+    source: Path, *, width: int, height: int, start_time: float, count: int
+) -> Iterator[Frame]:
+    """Decode ``count`` consecutive frames from ``start_time``, as greyscale.
+
+    One seek for the whole run rather than one per frame: ASD needs every frame
+    in a window, and :func:`read_frame`'s per-call seek would dominate the
+    stage's runtime.
+
+    Greyscale because that is what every model in this family consumes -- asking
+    ffmpeg for ``gray`` moves a third of the bytes over the pipe and skips a
+    conversion nothing needs.
+    """
+
+    if count < 0:
+        raise ValueError(f"count cannot be negative, got {count}")
+    if count == 0:
+        return
+
+    frame_bytes = width * height
+    if frame_bytes <= 0:
+        raise ValueError(f"invalid frame size {width}x{height}")
+
+    process = subprocess.Popen(
+        [
+            find_ffmpeg(),
+            "-v",
+            "error",
+            "-nostdin",
+            "-ss",
+            f"{max(0.0, start_time):.4f}",
+            "-i",
+            str(source),
+            "-frames:v",
+            str(count),
+            "-an",
+            "-sn",
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None and process.stderr is not None
+
+    captured: list[bytes] = []
+    drainer = threading.Thread(target=_drain, args=(process.stderr, captured), daemon=True)
+    drainer.start()
+
+    produced = 0
+    try:
+        while produced < count:
+            chunk = process.stdout.read(frame_bytes)
+            if len(chunk) < frame_bytes:
+                break
+            yield np.frombuffer(chunk, dtype=np.uint8).reshape(height, width).copy()
+            produced += 1
+    finally:
+        process.stdout.close()
+        process.wait()
+        drainer.join(timeout=5.0)
+
+    if produced != count:
+        detail = b"".join(captured).decode("utf-8", "replace").strip()
+        raise FFmpegError(
+            f"decoded {produced} frames from {source.name} starting at {start_time:.3f}s, "
+            f"expected {count}" + (f": {detail}" if detail else "")
+        )
+
+
 def read_frame(source: Path, *, width: int, height: int, time: float) -> Frame | None:
     """Decode the single frame at ``time``.
 

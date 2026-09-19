@@ -69,6 +69,41 @@ Their documented output for that file has overlapping turns
 (`0.0-2.7 speaker_0` under `0.8-13.6 speaker_3`), which is the property the rest
 of the pipeline depends on.
 
+## LoCoNet
+
+Not a package either. Clone the repository and take the AVA weights from the
+Google Drive link in its README:
+
+```bash
+git clone https://github.com/SJTUwxz/LoCoNet_ASD
+# download loconet_AVA.model from the link in that README
+```
+
+The environment follows the repository's own `requirements.yml`; the model is
+PyTorch-only and does not need the CUDA build DiariZen pins.
+
+### What to verify on the first run
+
+Two things in `avannotate/asd/` were derived rather than read off the
+repository, and both are domain shifts applied to every frame if wrong:
+
+1. **The crop margin.** `TalkNet`'s `cropScale` is 0.40 and LoCoNet inherits it,
+   but the exact arithmetic -- whether the margin is a fraction of the width on
+   each side, and whether the result is squared before resizing -- is not
+   something this machine could check. It is isolated in
+   `avannotate/asd/crop.py::crop_box`.
+
+2. **The audio frontend.** The loader wants `[4T, 128]`: four feature frames per
+   video frame, 128 bins. A log-mel at 16 kHz with a 10 ms hop gives exactly
+   that at 25 fps, which is where `log_mel`'s parameters come from -- derived
+   from the shape, not read from the code. It is isolated in
+   `avannotate/asd/model.py`.
+
+Both produce ordinary arrays, so a corrected version can be compared against a
+saved sample without re-running anything else. The cheapest check is to run S5
+on a clip where one person speaks and another is visibly silent, and look at
+whether the two traces separate.
+
 ## Running the pipeline
 
 ```bash
@@ -81,6 +116,8 @@ avannotate run --stage s3-cluster   --input videos.txt --output ./outputs \
     --config configs/s3.default.json
 avannotate run --stage s4-diarize   --input videos.txt --output ./outputs \
     --config configs/s4.diarizen.json
+avannotate run --stage s5-asd       --input videos.txt --output ./outputs \
+    --config configs/s5.loconet.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -96,6 +133,8 @@ Measured here, on CPU, over 26 seconds of video across three clips:
 | S1 (insightface, stride 3) | 63s | ~2.4x realtime; a GPU is far faster |
 | S2 | <1s | pure Python |
 | S3 | <1s | pure Python |
+| S4 (DiariZen) | not measured here | GPU; the WavLM front end is the cost |
+| S5 (LoCoNet) | not measured here | GPU; one pass per target per window |
 
 S1 dominates and is what to profile first on real hardware. `embedding_interval_seconds`
 changes only disk, not runtime: insightface computes the vector as part of its
