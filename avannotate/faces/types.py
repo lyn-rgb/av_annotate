@@ -20,8 +20,12 @@ from numpy.typing import NDArray
 Frame = NDArray[np.uint8]
 
 
-def _number(value: object, field: str) -> float:
-    """Coerce a JSON scalar, rejecting booleans and anything non-numeric."""
+def coerce_number(value: object, field: str) -> float:
+    """Coerce a JSON scalar, rejecting booleans and anything non-numeric.
+
+    Public because the stages read numbers back out of JSON too, and a bare
+    ``float(payload["x"])`` there loses the type without explaining why.
+    """
 
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise ValueError(f"{field} must be a number, got {type(value).__name__}")
@@ -40,7 +44,7 @@ def _points(value: object, field: str) -> tuple[tuple[float, float], ...]:
     for item in value:
         if not isinstance(item, (list, tuple)) or len(item) != 2:
             raise ValueError(f"{field} entries must be [x, y] pairs, got {item!r}")
-        points.append((_number(item[0], field), _number(item[1], field)))
+        points.append((coerce_number(item[0], field), coerce_number(item[1], field)))
     return tuple(points)
 
 
@@ -92,11 +96,11 @@ class Detection:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> Detection:
         return cls(
-            x=_number(payload["x"], "x"),
-            y=_number(payload["y"], "y"),
-            width=_number(payload["w"], "w"),
-            height=_number(payload["h"], "h"),
-            score=_number(payload["score"], "score"),
+            x=coerce_number(payload["x"], "x"),
+            y=coerce_number(payload["y"], "y"),
+            width=coerce_number(payload["w"], "w"),
+            height=coerce_number(payload["h"], "h"),
+            score=coerce_number(payload["score"], "score"),
             landmarks=_points(payload.get("landmarks"), "landmarks"),
         )
 
@@ -122,8 +126,8 @@ class FrameDetections:
         if raw is not None and not isinstance(raw, list):
             raise ValueError(f"faces must be a list, got {type(raw).__name__}")
         return cls(
-            frame_index=int(_number(payload["frame"], "frame")),
-            time=_number(payload["time"], "time"),
+            frame_index=int(coerce_number(payload["frame"], "frame")),
+            time=coerce_number(payload["time"], "time"),
             detections=tuple(
                 Detection.from_dict(face)
                 for face in (raw or [])

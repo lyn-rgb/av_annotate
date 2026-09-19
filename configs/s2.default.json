@@ -1,0 +1,7 @@
+{
+  "track_thresh": 0.5,
+  "match_thresh": 0.8,
+  "second_match_thresh": 0.5,
+  "det_thresh": 0.6,
+  "max_time_lost_seconds": 1.0
+}

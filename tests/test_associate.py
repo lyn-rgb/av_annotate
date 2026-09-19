@@ -1,13 +1,10 @@
 """Tests for the face/speaker assignment.
 
-The Hungarian solver is checked against brute force, because a subtly wrong
-assignment is exactly the failure this pipeline cannot detect downstream.
+The solver itself is checked in test_matching.py; these are about what the
+assignment means.
 """
 
 from __future__ import annotations
-
-import itertools
-import random
 
 import pytest
 
@@ -16,7 +13,6 @@ from avannotate.associate import (
     FaceObservation,
     SpeakerTurn,
     SpeechSample,
-    _hungarian,
     assign_speakers,
 )
 from avannotate.interval import Interval
@@ -37,65 +33,6 @@ def _trace(face_id: str, span: tuple[float, float], speaking: list[tuple[float, 
         t += step
     intervals = tuple(kwargs.pop("visible", ())) or (Interval(start, end),)
     return FaceObservation(face_id=face_id, visible=intervals, speech=tuple(samples))
-
-
-# --------------------------------------------------------------------------- #
-# the solver
-# --------------------------------------------------------------------------- #
-
-
-def _brute_force(cost: list[list[float]]) -> float:
-    """Optimal total cost, by trying every injective row -> column mapping."""
-
-    rows, columns = len(cost), len(cost[0])
-    best = float("inf")
-    for choice in itertools.permutations(range(columns), rows):
-        best = min(best, sum(cost[i][choice[i]] for i in range(rows)))
-    return best
-
-
-@pytest.mark.parametrize("seed", range(12))
-def test_hungarian_matches_brute_force_square(seed: int) -> None:
-    rng = random.Random(seed)
-    size = rng.randint(1, 5)
-    cost = [[rng.uniform(-2, 2) for _ in range(size)] for _ in range(size)]
-    assignment = _hungarian(cost)
-    assert sorted(assignment) == list(range(size))
-    total = sum(cost[i][assignment[i]] for i in range(size))
-    assert total == pytest.approx(_brute_force(cost))
-
-
-@pytest.mark.parametrize("seed", range(12))
-def test_hungarian_matches_brute_force_rectangular(seed: int) -> None:
-    rng = random.Random(seed + 100)
-    rows = rng.randint(1, 4)
-    columns = rows + rng.randint(0, 3)
-    cost = [[rng.uniform(-2, 2) for _ in range(columns)] for _ in range(rows)]
-    assignment = _hungarian(cost)
-    assert len(set(assignment)) == rows
-    assert all(0 <= column < columns for column in assignment)
-    total = sum(cost[i][assignment[i]] for i in range(rows))
-    # Brute force over the same rectangular matrix.
-    best = min(
-        sum(cost[i][choice[i]] for i in range(rows))
-        for choice in itertools.permutations(range(columns), rows)
-    )
-    assert total == pytest.approx(best)
-
-
-def test_hungarian_rejects_more_rows_than_columns() -> None:
-    with pytest.raises(ValueError):
-        _hungarian([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-
-
-def test_hungarian_prefers_globally_better_over_greedy() -> None:
-    """The case greedy gets wrong: the top-scoring pair blocks a better total."""
-
-    # Rows want to be maximised, so costs are negated scores.
-    scores = [[0.90, 0.80], [0.85, 0.10]]
-    assignment = _hungarian([[-value for value in row] for row in scores])
-    assert assignment == [1, 0]
-    assert scores[0][1] + scores[1][0] == pytest.approx(1.65)
 
 
 # --------------------------------------------------------------------------- #

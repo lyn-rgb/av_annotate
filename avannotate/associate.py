@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from avannotate.interval import Interval, overlap_duration, total_duration
+from avannotate.matching import hungarian
 from avannotate.schema import OFFSCREEN_FACE_ID
 
 #: Below this score a speaker is treated as having no visible source -- narration,
@@ -170,75 +171,6 @@ def _score_pair(
     return inside - config.contrast_penalty * outside, coverage
 
 
-def _hungarian(cost: list[list[float]]) -> list[int]:
-    """Minimum-cost assignment of rows to columns, one each.
-
-    Straight implementation of the shortest-augmenting-path form, O(n^2 m).
-    Requires ``len(cost) <= len(cost[0])``; callers transpose when they do not.
-    Returns the column chosen for each row, or ``-1`` if a row went unassigned.
-    """
-
-    rows = len(cost)
-    if rows == 0:
-        return []
-    columns = len(cost[0])
-    if rows > columns:
-        raise ValueError("cost matrix must have at least as many columns as rows")
-
-    infinity = float("inf")
-    row_potential = [0.0] * (rows + 1)
-    column_potential = [0.0] * (columns + 1)
-    # column_match[j] is the 1-based row assigned to column j; 0 means free.
-    column_match = [0] * (columns + 1)
-    previous = [0] * (columns + 1)
-
-    for row in range(1, rows + 1):
-        column_match[0] = row
-        column = 0
-        min_reduced = [infinity] * (columns + 1)
-        used = [False] * (columns + 1)
-
-        while True:
-            used[column] = True
-            current_row = column_match[column]
-            delta = infinity
-            next_column = 0
-            for candidate in range(1, columns + 1):
-                if used[candidate]:
-                    continue
-                reduced = (
-                    cost[current_row - 1][candidate - 1]
-                    - row_potential[current_row]
-                    - column_potential[candidate]
-                )
-                if reduced < min_reduced[candidate]:
-                    min_reduced[candidate] = reduced
-                    previous[candidate] = column
-                if min_reduced[candidate] < delta:
-                    delta = min_reduced[candidate]
-                    next_column = candidate
-            for candidate in range(columns + 1):
-                if used[candidate]:
-                    row_potential[column_match[candidate]] += delta
-                    column_potential[candidate] -= delta
-                else:
-                    min_reduced[candidate] -= delta
-            column = next_column
-            if column_match[column] == 0:
-                break
-
-        while column:
-            previous_column = previous[column]
-            column_match[column] = column_match[previous_column]
-            column = previous_column
-
-    assignment = [-1] * rows
-    for column in range(1, columns + 1):
-        if column_match[column] > 0:
-            assignment[column_match[column] - 1] = column - 1
-    return assignment
-
-
 def assign_speakers(
     faces: Sequence[FaceObservation],
     turns: Sequence[SpeakerTurn],
@@ -312,7 +244,7 @@ def assign_speakers(
     else:
         matrix = [to_cost(row) for row in scores]
 
-    mapping = _hungarian(matrix)
+    mapping = hungarian(matrix)
     pairs: dict[str, int] = {}
     for row_index, column_index in enumerate(mapping):
         if column_index < 0:

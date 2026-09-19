@@ -36,7 +36,7 @@ import numpy as np
 
 from avannotate.faces.detect import Detector, DetectorError, build_detector
 from avannotate.faces.frames import FrameSampling, iter_frames
-from avannotate.faces.types import Detection
+from avannotate.faces.types import Detection, FrameDetections, coerce_number
 from avannotate.stages import s0_preprocess
 from avannotate.stages.base import (
     Artifact,
@@ -320,6 +320,49 @@ def detections_path(context: StageContext) -> Path:
     if not path.is_file():
         raise FileNotFoundError(f"{path} is missing; run {STAGE} first")
     return path
+
+
+def load_frame_detections(context: StageContext) -> tuple[FrameDetections, ...]:
+    """The detections as typed objects, not raw rows.
+
+    This stage owns the file format, so this is where it gets parsed.  A
+    consumer reaching into ``detections.jsonl`` itself would be coupled to a
+    schema it has no reason to know.
+    """
+
+    frames: list[FrameDetections] = []
+    for row in load_detections(context):
+        raw = row.get("faces") or []
+        if not isinstance(raw, list):
+            raise ValueError(f"faces must be a list, got {type(raw).__name__}")
+        frames.append(
+            FrameDetections(
+                frame_index=int(coerce_number(row["frame"], "frame")),
+                time=coerce_number(row["time"], "time"),
+                detections=tuple(
+                    Detection.from_dict(face) for face in raw if isinstance(face, dict)
+                ),
+            )
+        )
+    return tuple(frames)
+
+
+def load_config(context: StageContext) -> S1Config:
+    """The config this stage actually ran with.
+
+    Read back from the summary rather than from the caller's mapping: a later
+    stage needs the settings that produced the detections on disk, which are not
+    necessarily the ones in today's config file.
+    """
+
+    path = context.work_dir / STAGE / SUMMARY_NAME
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} is missing; run {STAGE} first")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    config = payload.get("config")
+    if not isinstance(config, dict):
+        raise ValueError(f"{path} has no config block; re-run {STAGE}")
+    return S1Config.from_mapping(config)
 
 
 __all__ = [
