@@ -86,38 +86,72 @@ of the pipeline depends on.
 
 ## LoCoNet
 
-Not a package either. Clone the repository and take the AVA weights from the
-Google Drive link in its README:
+> **This one does not work out of the box, and the reason is in the repository
+> rather than in this pipeline.** Read this section before planning a run.
 
 ```bash
-git clone https://github.com/SJTUwxz/LoCoNet_ASD
-# download loconet_AVA.model from the link in that README
+git clone https://github.com/SJTUwxz/LoCoNet_ASD     # or: scripts/setup_server.sh
+# then download loconet_AVA.model from the Google Drive link in its README
 ```
 
-The environment follows the repository's own `requirements.yml`; the model is
-PyTorch-only and does not need the CUDA build DiariZen pins.
+### The repository cannot be imported as it stands
+
+`loconet.py` opens with `from xxlib.utils.distributed import all_gather`, and
+`xxlib` **exists nowhere in the repository** — a leftover from the authors'
+private training harness. So `import loconet` raises `ModuleNotFoundError`
+before anything else can go wrong. Two ways past it:
+
+- **Patch that one line** in the checkout (it is only used by the training
+  paths, not by inference).
+- **Vendor the model files** into a directory of your own —
+  `model/loconet_encoder.py`, `model/visualEncoder.py`, `model/attentionLayer.py`,
+  `model/convLayer.py` and `loss_multi.py` — and point `repo` at it. The modules
+  import each other by flat name, so they have to travel together.
+
+Note that **the weights have no declared licence**: there is no `LICENSE` at the
+repository root, and the only one anywhere covers the vendored `dlhammer`. The
+README says nothing about the weights. Fine for research use, but it is a
+compliance question rather than a technical one, and vendoring the code into
+another repository is a different act from cloning it.
+
+### What else about it is not what it looks like
+
+All read off the source, and each was wrong when it was assumed:
+
+- **There is no inference entry point.** `Loconet.forward(audioFeature,
+  visualFeature, labels, masks)` dereferences `labels` and `masks` before any
+  branch and returns a loss tuple — it cannot be called to score anything. The
+  adapter drives the four frontends and the classifier head itself, which is
+  what the repository's own `evaluate_network` does internally.
+- **The class is `locoencoder`**, not `LoCoNet` — that exact capitalisation
+  appears nowhere in the repository. The wrapper that shares the similar name
+  exists only to compute training losses, and it calls `.cuda()` unconditionally
+  in its constructor.
+- **The head is `lossAV.FC`**, a `Linear(256, 2)`, and its weights live in the
+  checkpoint rather than in the encoder. Scoring is `softmax(-1)[:, 1]`; there
+  is no sigmoid in this model.
+- **`cropScale` is not in this repository.** That constant is TalkNet's. LoCoNet
+  crops the detected box directly and resizes to 112×112 square, flattening the
+  aspect ratio, so the margin here is **0.0** and was wrong at 0.40.
+- **The audio is `[4T, 64]`, not `[4T, 128]`.** 64 is VGGish's mel-band count;
+  128 is the *output* width of the audio frontend. Feeding 128 bands to a
+  64-wide first convolution does not fail, it convolves over nonsense.
+- **Crops are 0..255.** The visual frontend normalises its own input,
+  `(x / 255 - 0.4161) / 0.1688`, so dividing by 255 beforehand applies the shift
+  twice — every activation in the first layer wrong, with no error.
 
 ### What to verify on the first run
 
-Two things in `avannotate/asd/` were derived rather than read off the
-repository, and both are domain shifts applied to every frame if wrong:
-
-1. **The crop margin.** `TalkNet`'s `cropScale` is 0.40 and LoCoNet inherits it,
-   but the exact arithmetic -- whether the margin is a fraction of the width on
-   each side, and whether the result is squared before resizing -- is not
-   something this machine could check. It is isolated in
-   `avannotate/asd/crop.py::crop_box`.
-
-2. **The audio frontend.** The loader wants `[4T, 128]`: four feature frames per
-   video frame, 128 bins. A log-mel at 16 kHz with a 10 ms hop gives exactly
-   that at 25 fps, which is where `log_mel`'s parameters come from -- derived
-   from the shape, not read from the code. It is isolated in
-   `avannotate/asd/model.py`.
-
-Both produce ordinary arrays, so a corrected version can be compared against a
-saved sample without re-running anything else. The cheapest check is to run S5
-on a clip where one person speaks and another is visibly silent, and look at
-whether the two traces separate.
+1. **That the weights loaded at all.** `load_report` on the adapter counts the
+   keys the encoder recognised and the ones it did not. A checkpoint whose keys
+   do not match shows up there as `missing` being most of the model, and it will
+   `load_state_dict(strict=False)` happily without it.
+2. **The crop and the features against a known clip.** The two constants that
+   are ours to get wrong are both in `avannotate/asd/`: `crop.py::crop_box` and
+   `model.py::log_mel`. Both produce ordinary arrays, so a corrected version can
+   be compared against a saved sample without re-running anything else.
+3. **That the traces separate.** Run S5 on a clip where one person speaks and
+   another is visibly silent and look at whether the two traces do.
 
 ## ClearerVoice
 

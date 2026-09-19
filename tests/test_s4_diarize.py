@@ -246,9 +246,19 @@ def test_an_unknown_backend_is_rejected() -> None:
         build_diarizer({"backend": "pyannote"})
 
 
-def test_the_token_is_not_written_to_the_config_hash() -> None:
-    """A credential in the resume record on disk is a leak with no upside."""
+def test_there_is_no_token_to_configure() -> None:
+    """DiariZen has no token argument and needs none.
+
+    Its checkpoints, and the wespeaker embedding model pulled alongside them,
+    are all ungated -- verified by anonymous request. The field used to exist
+    here and was passed as ``use_auth_token``, which is not a parameter of
+    ``from_pretrained(repo_id, cache_dir=None, rttm_out_dir=None)``: it raised
+    ``TypeError`` on every construction and the bare ``except TypeError`` around
+    it swallowed that. A knob that cannot be turned is worse than no knob,
+    because it still looks like one.
+    """
 
     config = s4_diarize.S4Config.from_mapping({"huggingface_token": "hf_secret"})
-    assert config.to_dict()["huggingface_token"] == "***"
+
+    assert "huggingface_token" not in config.to_dict()
     assert "hf_secret" not in json.dumps(config.cache_key())

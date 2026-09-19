@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from avannotate.asd.model import _MEL_BINS as MEL_BINS
 from avannotate.asd.model import AsdError
 from avannotate.asd.types import SpeakingSample, TrackSpeaking
 from avannotate.faces.track import TrackDetection, Tracklet, TrackQuality
@@ -89,7 +90,7 @@ def staged(single_shot_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     def stub_features(samples: Any, *, video_frames: int) -> np.ndarray:
         feature_calls.append(len(samples))
-        return np.zeros((video_frames * 4, 128), dtype=np.float32)
+        return np.zeros((video_frames * 4, MEL_BINS), dtype=np.float32)
 
     monkeypatch.setattr(s5_asd, "features_for_window", stub_features)
 
@@ -130,7 +131,13 @@ def test_every_probability_survives_to_the_output(staged: Any) -> None:
 
 
 def test_the_model_receives_the_shapes_it_documents(staged: Any) -> None:
-    """``[S, T, H, W]`` crops and ``[4T, 128]`` features, or the pass is wasted."""
+    """``[S, T, H, W]`` crops and ``[4T, 64]`` features, or the pass is wasted.
+
+    The 64 is VGGish's mel-band count and is what the audio frontend's first
+    convolution is wide.  Reading 128 off a later layer of the model is how this
+    was wrong first; 128 bands into a 64-wide convolution does not fail, it
+    convolves over nonsense.
+    """
 
     context, install, _ = staged
     model = install()
@@ -139,7 +146,7 @@ def test_the_model_receives_the_shapes_it_documents(staged: Any) -> None:
     for crops_shape, audio_shape in model.calls:
         assert len(crops_shape) == 4
         assert crops_shape[2] == crops_shape[3] == 112
-        assert audio_shape == (crops_shape[1] * 4, 128)
+        assert audio_shape == (crops_shape[1] * 4, MEL_BINS)
 
 
 def test_every_group_puts_the_target_first(staged: Any) -> None:
@@ -323,12 +330,21 @@ def test_stacking_speakers_needs_matching_lengths() -> None:
         )
 
 
-def test_stacking_scales_into_the_unit_range() -> None:
+def test_stacking_leaves_the_pixels_in_the_range_the_model_expects() -> None:
+    """0..255, because LoCoNet normalises inside its own visual frontend.
+
+    Scaling to [0, 1] here as well would apply the shift twice and hand the
+    network a batch centred near -2.5 instead of near 0.5.  Nothing raises; the
+    first layer is simply wrong, which reads as a poor score rather than a bug.
+    """
+
     from avannotate.asd.batch import stack_speakers
 
     stacked = stack_speakers([np.full((2, 112, 112), 255, dtype=np.uint8)])
     assert stacked.shape == (1, 2, 112, 112)
-    assert float(stacked.max()) == pytest.approx(1.0)
+    assert stacked.dtype == np.float32
+    assert float(stacked.max()) == pytest.approx(255.0)
+    assert float(stacked.min()) == pytest.approx(255.0)
 
 
 def test_track_speaking_round_trips() -> None:

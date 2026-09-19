@@ -95,8 +95,15 @@ def read_faces(
 def stack_speakers(tiles: Sequence[NDArray[np.uint8]]) -> NDArray[np.float32]:
     """``[S, T, size, size]`` uint8 tiles to the ``[S, T, size, size]`` float input.
 
-    Scaled to ``[0, 1]`` because that is what the checkpoints were trained on;
-    feeding raw 0..255 would saturate every activation.
+    **Left in the 0..255 range on purpose.**  LoCoNet normalises inside its own
+    visual frontend -- ``(x / 255 - 0.4161) / 0.1688`` -- so dividing here as
+    well would apply the shift twice and hand the network a batch sitting around
+    -2.5 instead of around 0.5.  Nothing would fail; every activation in the
+    first layer would simply be wrong, which is the kind of mistake that shows
+    up as an unimpressive mAP rather than as a bug report.
+
+    The uint8 is widened to float32 because that is what a torch tensor of
+    images has to be, not because the values change.
     """
 
     if not tiles:
@@ -104,5 +111,5 @@ def stack_speakers(tiles: Sequence[NDArray[np.uint8]]) -> NDArray[np.float32]:
     lengths = {tile.shape[0] for tile in tiles}
     if len(lengths) != 1:
         raise ValueError(f"speakers have differing frame counts: {sorted(lengths)}")
-    stacked = np.stack(list(tiles), axis=0).astype(np.float32) / 255.0
+    stacked = np.stack(list(tiles), axis=0).astype(np.float32)
     return np.ascontiguousarray(stacked)

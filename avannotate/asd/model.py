@@ -6,19 +6,26 @@ Hollywood footage AVA is drawn from, and it beats EASEE on small faces, which a
 822x462 clip full of them needs.
 
 The interface is deliberately small -- crops and features in, probabilities out.
-Two things in this file could not be checked from this machine and both are
-isolated so they can be corrected in one place:
 
-1. **The audio frontend.**  LoCoNet's loader wants ``[4T, 128]``: four feature
-   frames per video frame, 128 bins.  That is exactly what a log-mel at 16 kHz
-   with a 10 ms hop gives at 25 fps, which is where :func:`log_mel`'s parameters
-   come from -- derived from the shape, not read off TalkNet's source.
-2. **The crop margin.**  See :mod:`avannotate.asd.crop`.
+Every number in the frontend below was read off the LoCoNet repository's source
+rather than inferred, and three of them were wrong while they were inferred:
 
-Both are domain shifts applied to every frame if they are wrong, so both are
-worth measuring against the checkpoint's own preprocessing before a full corpus
-run.  Their outputs are ordinary arrays, so a corrected version can be checked
-against a saved sample without re-running anything else.
+1. **The crop margin is zero.**  ``cropScale = 0.40`` is TalkNet's and LoCoNet
+   does not inherit it -- that string does not appear anywhere in the
+   repository.  See :mod:`avannotate.asd.crop`.
+2. **The audio is ``[4T, 64]``.**  Sixty-four mel bands, because that is
+   VGGish's band count and the width of the audio frontend's first convolution.
+   The 128 that appears nearby is that frontend's *output* width, and reading a
+   shape off the wrong layer is how this was wrong first.
+3. **The crops are 0..255.**  LoCoNet normalises inside its own visual frontend,
+   ``(x / 255 - 0.4161) / 0.1688``, so scaling beforehand applies the shift
+   twice -- silently, and to every frame of every video.
+
+The repository's inference path is not usable as a library: it needs
+``dlhammer`` and an AVA data tree, its ``loconet.py`` imports a module the
+repository does not contain, and its ``forward`` is a training step that cannot
+be called without labels.  See :class:`LoCoNetAsd` for what this adapter does
+instead, and ``docs/server-setup.md`` for what it still needs.
 """
 
 from __future__ import annotations
@@ -44,7 +51,12 @@ _ASSUMED_VIDEO_FPS = 25.0
 _AUDIO_FRAMES_PER_VIDEO_FRAME = 4
 
 #: Mel bins, from the same shape.
-_MEL_BINS = 128
+#: The mel-band count is VGGish's, and VGGish's is 64 -- not the 128 that the
+#: *output* of the audio frontend happens to be wide.  Reading the shape off the
+#: model's later layer rather than its input is how this was wrong first: 64 is
+#: what ``vggish_params.NUM_MEL_BINS`` says, and feeding 128 bands to a frontend
+#: whose first convolution is 64 wide does not fail, it convolves over nonsense.
+_MEL_BINS = 64
 
 #: 16 kHz is the pipeline's audio standard and what the features are for.
 _SAMPLE_RATE = 16_000
@@ -138,13 +150,69 @@ def features_for_window(
     return np.asarray(np.concatenate([features, pad], axis=0), dtype=np.float32)
 
 
+#: What the released AVA checkpoint was trained with.  The speaker count is
+#: **baked into the weight shapes**: ``convLayer`` builds
+#: ``Conv2d(256, 256 * NUM_SPEAKERS, (NUM_SPEAKERS, 7))``, so a model
+#: constructed with a different number cannot load these weights at all.
+LOCO_NET_NUM_SPEAKERS = 3
+
+#: The rest of the config the network reads, from ``configs/multi.yaml``.
+LOCO_NET_AV_LAYERS = 3
+LOCO_NET_ADJUST_ATTENTION = 0
+
+
+def _loconet_config() -> Any:
+    """The three keys the encoder reads, in the shape it reads them.
+
+    The repository's network takes a ``dlhammer`` config object and looks up
+    ``cfg.MODEL.NUM_SPEAKERS``, ``cfg.MODEL.AV_layers`` and
+    ``cfg.MODEL.ADJUST_ATTENTION``.  Building one by hand means this adapter
+    does not need dlhammer, which is reachable only through the repository's
+    own PYTHONPATH arrangement.
+    """
+
+    class _Section(dict):  # type: ignore[type-arg]
+        __getattr__ = dict.__getitem__
+
+    model = _Section()
+    model["NUM_SPEAKERS"] = LOCO_NET_NUM_SPEAKERS
+    model["AV_layers"] = LOCO_NET_AV_LAYERS
+    model["ADJUST_ATTENTION"] = LOCO_NET_ADJUST_ATTENTION
+    config = _Section()
+    config["MODEL"] = model
+    return config
+
+
 class LoCoNetAsd:
     """LoCoNet behind :class:`AsdModel`.
 
-    The checkpoint and the module that builds the network come from the
-    official repository (``SJTUwxz/LoCoNet_ASD``), which is not a package and
-    cannot be installed -- the caller supplies the path to a checkout, and this
-    adapter imports from it.
+    The checkpoint and the network come from the official repository
+    (``SJTUwxz/LoCoNet_ASD``), which is not a package, cannot be installed, and
+    -- read off its source -- **cannot be imported as it stands**: its
+    ``loconet.py`` does ``from xxlib.utils.distributed import all_gather``, and
+    ``xxlib`` exists nowhere in the repository.  That is a leftover from the
+    authors' private training harness.
+
+    Three further things about that repository shape this adapter.  Each was
+    wrong in the first draft of it, and each would have failed quietly rather
+    than loudly:
+
+    * **There is no inference entry point.**  ``Loconet.forward`` takes
+      ``(audioFeature, visualFeature, labels, masks)`` and returns a loss tuple;
+      both ``labels`` and ``masks`` are dereferenced before any branch, so it
+      cannot be called to score anything.  The four frontends and the classifier
+      head are driven separately here, which is what the repository's own
+      ``evaluate_network`` does internally.
+    * **The head is ``lossAV.FC``**, a ``Linear(256, 2)``, and its weights live
+      in the checkpoint rather than in the encoder.  The repository scores with
+      ``softmax(-1)[:, 1]``; there is no sigmoid anywhere in this model.
+    * **The visual frontend normalises its own input** -- ``(x / 255 - 0.4161) /
+      0.1688`` -- so crops arrive in 0..255 and must not be scaled first.
+
+    Because of the ``xxlib`` import, pointing ``repo`` at a plain checkout is
+    not enough on its own.  Either patch that one line, or vendor the four model
+    files into a directory and point ``repo`` at it.  See
+    ``docs/server-setup.md``.
     """
 
     name = "loconet"
@@ -163,7 +231,7 @@ class LoCoNetAsd:
             raise AsdError(
                 f"LoCoNet checkpoint not found at {checkpoint_path}. The weights are "
                 "distributed from the repository's README (SJTUwxz/LoCoNet_ASD) as a "
-                "Google Drive link; download them once and point --config at the file."
+                "Google Drive link; download them once and point the config at the file."
             )
 
         if repo is not None:
@@ -183,24 +251,95 @@ class LoCoNetAsd:
         self._torch = torch
         self.checkpoint = str(checkpoint_path)
         self.device = self._place_on(device)
+        #: How much of the checkpoint the encoder recognised.  Recorded rather
+        #: than raised on: a wholesale mismatch means the weights do not belong
+        #: to this network, and that shows up as this count being most of it.
+        self.load_report: dict[str, int] = {}
 
         try:
-            from loconet import LoCoNet  # type: ignore[import-not-found]
+            # ``locoencoder``, not ``Loconet`` and certainly not ``LoCoNet``:
+            # neither of those capitalisations exists, and the wrapper that
+            # shares the ``Loconet`` name exists only to compute training
+            # losses.  The encoder is also the one that does not call ``.cuda()``
+            # in its constructor, so it is usable on a CPU-only machine.
+            from model.loconet_encoder import locoencoder  # type: ignore[import-not-found]
         except ModuleNotFoundError as error:
             raise AsdError(
-                "could not import LoCoNet. Pass the repository checkout as 'repo' so "
-                "its loconet.py is importable -- the project is not a package."
+                "could not import LoCoNet's encoder. Its repository does not import "
+                "as it stands -- loconet.py imports a module ('xxlib') the repository "
+                "does not contain -- so either patch that line in the checkout or "
+                "vendor the model files. See docs/server-setup.md."
             ) from error
 
-        self._model = LoCoNet()
-        state = torch.load(str(checkpoint_path), map_location=self._resolve_device())
-        # Checkpoints from training wrappers nest the weights; accept both so a
-        # raw state dict and a saved module both load.
+        self._encoder = locoencoder(_loconet_config())
+        self._head = self._build_head(checkpoint_path)
+        self._encoder.to(self._resolve_device())
+        self._encoder.eval()
+
+    def _build_head(self, checkpoint_path: Path) -> Any:
+        """Load the encoder's weights and lift the classifier head out.
+
+        ``lossAV.FC`` belongs to the training wrapper, so its weights are saved
+        under those names and have to be separated before the encoder's own
+        state can be loaded.  The other two losses and any optimizer state are
+        ignored.
+        """
+
+        torch = self._torch
+        state = torch.load(str(checkpoint_path), map_location="cpu")
         if isinstance(state, dict) and "state_dict" in state:
             state = state["state_dict"]
-        self._model.load_state_dict(state)
-        self._model.to(self._resolve_device())
-        self._model.eval()
+        if not isinstance(state, dict):
+            raise AsdError(
+                f"{checkpoint_path} is not a state dict but a {type(state).__name__}. "
+                "The Google Drive file is a plain torch.save of the wrapper's state."
+            )
+
+        # Training saved through a DDP wrapper around the wrapper, so keys carry
+        # both prefixes.  The repository's own loadParameters strips the literal
+        # "model.module."; the inner "model." is the encoder's own submodule
+        # name inside the wrapper.
+        outer = "model.module."
+        stripped = {
+            (key[len(outer) :] if key.startswith(outer) else key): value
+            for key, value in state.items()
+        }
+        inner = "model."
+        encoder_state = {
+            key[len(inner) :]: value
+            for key, value in stripped.items()
+            if key.startswith(inner) and not key.startswith(inner + "loss")
+        }
+        head_state = {
+            key[len(inner + "lossAV.") :]: value
+            for key, value in stripped.items()
+            if key.startswith(inner + "lossAV.")
+        }
+        if not head_state:
+            raise AsdError(
+                f"{checkpoint_path} holds no lossAV weights, and this adapter needs "
+                "the classifier head -- without it the encoder's 256-d features mean "
+                "nothing on their own. Keys seen: "
+                + ", ".join(sorted(stripped)[:8])
+            )
+
+        try:
+            from loss_multi import lossAV  # type: ignore[import-not-found]
+        except ModuleNotFoundError as error:
+            raise AsdError(
+                "could not import lossAV, which holds the classifier head. It lives "
+                "in the repository's loss_multi.py, so 'repo' has to point at a "
+                "directory containing it alongside the model files."
+            ) from error
+
+        head = lossAV()
+        head.load_state_dict(head_state)
+        head.to(self._resolve_device())
+        head.eval()
+
+        missing, unexpected = self._encoder.load_state_dict(encoder_state, strict=False)
+        self.load_report = {"missing": len(missing), "unexpected": len(unexpected)}
+        return head
 
     def _resolve_device(self) -> Any:
         return self._torch.device(self.device)
@@ -214,29 +353,44 @@ class LoCoNetAsd:
         self, crops: NDArray[np.float32], audio: NDArray[np.float32]
     ) -> NDArray[np.float32]:
         torch = self._torch
-        expected = (len(crops), crops.shape[1] if crops.ndim > 1 else 0)
         if crops.ndim != 4:
             raise AsdError(f"crops must be [S, T, H, W], got shape {crops.shape}")
-        if crops.shape[1] > self.max_window_frames:
+        speakers, frames = int(crops.shape[0]), int(crops.shape[1])
+        if frames > self.max_window_frames:
             raise AsdError(
-                f"window of {crops.shape[1]} frames exceeds the {self.max_window_frames} "
+                f"window of {frames} frames exceeds the {self.max_window_frames} "
                 "the model holds in memory; the window planner should have split it"
             )
-        if audio.shape != (crops.shape[1] * _AUDIO_FRAMES_PER_VIDEO_FRAME, _MEL_BINS):
+        expected_audio = (frames * _AUDIO_FRAMES_PER_VIDEO_FRAME, _MEL_BINS)
+        if audio.shape != expected_audio:
             raise AsdError(
-                f"audio features must be [{crops.shape[1] * _AUDIO_FRAMES_PER_VIDEO_FRAME}, "
-                f"{_MEL_BINS}] to match {expected[1]} video frames, got {audio.shape}"
+                f"audio features must be {list(expected_audio)} to match {frames} "
+                f"video frames, got {list(audio.shape)}"
             )
 
-        video = torch.from_numpy(crops).unsqueeze(0).to(self._resolve_device())
-        waveform = torch.from_numpy(audio).unsqueeze(0).to(self._resolve_device())
-        with torch.no_grad():
-            logits = self._model(waveform, video)
+        device = self._resolve_device()
+        # Two leading batch dimensions, because the repository's own loader
+        # always carries one and its configs pin the batch size to 1.
+        visual = torch.from_numpy(crops).unsqueeze(0).to(device)
+        # The audio is a single-channel image: [b, 1, 4T, mel].
+        audio_feature = torch.from_numpy(audio).unsqueeze(0).unsqueeze(0).to(device)
 
-        # The head is trained with a binary objective, so a sigmoid is the
-        # probability the caller wants.  Squeezed back to [S, T] and moved to
-        # the host: everything downstream is numpy.
-        probabilities = torch.sigmoid(logits).squeeze(0)
+        with torch.no_grad():
+            audio_embed = self._encoder.forward_audio_frontend(audio_feature)
+            visual_embed = self._encoder.forward_visual_frontend(visual)
+            # The audio frontend runs once for the clip while the visual one runs
+            # per speaker, so its embedding is repeated across the speaker axis.
+            audio_embed = audio_embed.repeat(speakers, 1, 1)
+            audio_embed, visual_embed = self._encoder.forward_cross_attention(
+                audio_embed, visual_embed
+            )
+            combined = self._encoder.forward_audio_visual_backend(
+                audio_embed, visual_embed
+            )
+            # [S*T, 256] -> [S, T, 2] -> the probability of the speaking class.
+            logits = self._head.FC(combined).view(speakers, frames, 2)
+            probabilities = torch.softmax(logits, dim=-1)[..., 1]
+
         return np.asarray(probabilities.detach().cpu().numpy(), dtype=np.float32)
 
 

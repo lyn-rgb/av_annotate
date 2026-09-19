@@ -53,7 +53,6 @@ class S4Config:
     backend: str = "diarizen"
     model: str = DEFAULT_MODEL
     device: str | None = None
-    huggingface_token: str | None = None
     #: One speaker's turns closer than this are one utterance.  A window
     #: boundary is not a turn boundary, and 0.2s is the same threshold S10 uses
     #: for the same reason: a breath, not a change of speaker.
@@ -68,7 +67,6 @@ class S4Config:
             backend=config_str(mapping, "backend", "diarizen"),
             model=config_str(mapping, "model", DEFAULT_MODEL),
             device=config_optional_str(mapping, "device"),
-            huggingface_token=config_optional_str(mapping, "huggingface_token"),
             merge_gap_seconds=config_float(mapping, "merge_gap_seconds", 0.20),
             min_turn_seconds=config_float(mapping, "min_turn_seconds", 0.10),
         )
@@ -80,7 +78,6 @@ class S4Config:
             "device": self.device,
             # The token is not written: it is a credential, and a config hash
             # that included it would put it in the resume record on disk.
-            "huggingface_token": "***" if self.huggingface_token else None,
             "merge_gap_seconds": self.merge_gap_seconds,
             "min_turn_seconds": self.min_turn_seconds,
         }
@@ -137,7 +134,6 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
                 "backend": config.backend,
                 "model": config.model,
                 "device": config.device,
-                "huggingface_token": config.huggingface_token,
             }
         )
     except DiarizerError as error:

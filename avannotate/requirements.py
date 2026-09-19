@@ -146,7 +146,15 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         config_file="s5.loconet.json",
         weights=("checkpoint",),
         weights_hint=CHECKPOINTS["loconet"],
-        note="LoCoNet is not a package: it needs a checkout and a checkpoint path",
+        # Deliberately does not claim this stage is ready once the boxes are
+        # ticked.  Its repository imports a module it does not contain, so a
+        # checkout alone is not enough and this check cannot tell -- it would
+        # have to import the thing, which is exactly what it must not do.
+        note=(
+            "checkout and checkpoint present -- but the repository does not import "
+            "as it stands (loconet.py needs a missing 'xxlib'); patch it or vendor "
+            "the model files. See docs/server-setup.md"
+        ),
     ),
     Requirement(
         stage="s7-tse",

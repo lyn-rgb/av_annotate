@@ -86,10 +86,15 @@ Every stage is resumable on its own, so the driver is a loop around the CLI
 rather than new machinery — see the plan's M1.
 
 **S4, S5, S7, S8, S9 and S10 need GPUs and packages that are not installed
-here.** Their model adapters are written against documented interfaces and could
-not be run; each names in its own docstring what to verify first. Everything
+here.** Their model adapters are written against source that was read rather
+than executed; each names in its own docstring what to verify first. Everything
 that decides what goes into a model pass, and what its output means, is
 separate, pure, and tested.
+
+**S5 is the one to read up on before planning a run.** LoCoNet's repository does
+not import as it stands — its `loconet.py` needs a module the repository does not
+contain — and its weights carry no declared licence. `docs/server-setup.md` says
+what has to happen and what the options are; it is a decision, not a setup step.
 
 ### Running it
 

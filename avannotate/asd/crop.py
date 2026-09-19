@@ -21,10 +21,22 @@ from dataclasses import dataclass
 
 from avannotate.coercion import coerce_number
 
-#: TalkNet's ``--cropScale``.  LoCoNet's preprocessing inherits it.
-DEFAULT_MARGIN = 0.40
+#: **Zero, because LoCoNet has no crop scale.**  Reading ``cropScale = 0.40``
+#: off TalkNet and assuming it was inherited was wrong: a case-insensitive
+#: search of the LoCoNet repository for ``cropScale`` or ``crop_scale`` returns
+#: nothing, and its AVA preprocessing crops the detected box directly --
+#: ``frame[y1:y2, x1:x2]`` -- with no expansion and no squaring, leaving the
+#: aspect ratio to be flattened later by ``cv2.resize(face, (112, 112))``.
+#:
+#: So the box is used as the detector reported it.  Expanding it here would
+#: frame every face more loosely than the checkpoint was trained on, which is a
+#: domain shift applied to every frame of every video -- and one that degrades
+#: the scores quietly rather than raising.
+DEFAULT_MARGIN = 0.0
 
-#: What every ASD checkpoint in this family resizes its crops to.
+#: What every ASD checkpoint in this family resizes its crops to.  Square and
+#: hard: the aspect ratio is not preserved, which is the repository's own
+#: behaviour and therefore the behaviour this has to reproduce.
 CROP_SIZE = 112
 
 
