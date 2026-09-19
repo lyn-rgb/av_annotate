@@ -129,9 +129,14 @@ fetch_repo() {
     # Recorded so a bundle can be traced back to the commit it came from --
     # `main` moves, and a bundle with no provenance is a bundle nobody can
     # reproduce.  Needs git here only, never on the server.
+    # Provenance is a nicety, not a requirement: recording which commit a
+    # tarball came from is worth having and is never worth failing a bundle
+    # over.  `|| true` because a failing command substitution aborts the script
+    # under `set -e` before the fallback below can run -- and a mirror or a
+    # proxy that cannot serve git is an ordinary thing to meet.
     local sha="unknown"
     if have git; then
-        sha="$(git ls-remote "$url" HEAD 2>/dev/null | awk '{print $1}')"
+        sha="$(git ls-remote "$url" HEAD 2>/dev/null | awk '{print $1}' || true)"
         [[ -n "$sha" ]] || sha="unknown"
     fi
     note "commit $sha"
@@ -175,7 +180,11 @@ fetch_file() {
         die "$target is only $size bytes (expected at least $min_bytes) -- the
 download is truncated even after retrying. Check the URL, or fetch it by hand."
     fi
-    note "$target: $((size / 1024 / 1024)) MB"
+    if (( size >= 1048576 )); then
+        note "$target: $((size / 1024 / 1024)) MB"
+    else
+        note "$target: $((size / 1024)) KB"
+    fi
 }
 
 fetch_file "$BUFFALO_URL" "models/buffalo_l.zip" 10000000
