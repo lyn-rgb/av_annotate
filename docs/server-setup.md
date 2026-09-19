@@ -118,6 +118,46 @@ That upload also carries `DiariZen-main.zip`, which is the repository itself --
 the thing `setup_server.sh` clones from GitHub, and therefore cannot get on the
 network this whole path exists for.
 
+### The two repository checkouts
+
+The checkpoints are all reachable now; the *code* is a separate problem, because
+these two are git clones rather than packages.
+
+**LoCoNet** (`SJTUwxz/LoCoNet_ASD`) has no mirror anywhere — not on ModelScope
+under any spelling, and `gitclone.com` serves an empty repository for it, while
+`gitcode`'s and `gitee`'s GitHub mirrors 404/405. The CDNs that could serve a
+repository's files (`jsDelivr`, `statically`, `githack`) are all abroad, like the
+ghproxy services — `ghproxy.net` is OVH France, `gh-proxy.com` is Cloudflare,
+`ghfast.top` is US, which is why none of them are a way around anything.
+
+So a checkout has to be carried, the same way the weights are. Once one is in
+place at `models/loconet/LoCoNet_ASD`, `setup_server.sh` skips the clone
+entirely — `install_repo` treats the presence of `loconet.py` as "already
+there" — and `make_offline_bundle.sh` packs it into the bundle instead of
+downloading it. That is what the third argument to `fetch_repo` is for.
+
+Verifying a carried checkout is one command, and it is worth running because
+this is the stage where a wrong file would produce plausible nonsense rather
+than fail:
+
+```bash
+python -c "
+from avannotate.asd.model import LoCoNetAsd
+m = LoCoNetAsd(checkpoint='models/loconet/loconet_AVA.model',
+               repo='models/loconet/LoCoNet_ASD', device='cpu')
+print(m.load_report)"
+# -> {'missing': 0, 'unexpected': 0}
+```
+
+**DiariZen** is the same shape of problem, and `DiariZen-main.zip` from the
+ModelScope upload is a usable stand-in — but not a perfect one. It carries the
+`diarizen/` package and the vendored `pyannote-audio/`, and is missing two
+things: `constraints.txt`, which `setup_server.sh` passes to pip for the
+vendored pyannote install (that step is already `|| warn`, so it degrades rather
+than fails), and the `dscore` submodule, which arrives as an empty directory.
+If `dscore` turns out to be needed at inference rather than only for scoring,
+that one needs a real clone.
+
 **If the server cannot reach github.com, start with the bundle instead.** More
 depends on GitHub than this repository's own three URLs: insightface fetches
 `buffalo_l` from a GitHub release, and so does torchvggish's VGGish. Building the

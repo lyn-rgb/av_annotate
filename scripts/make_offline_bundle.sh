@@ -128,8 +128,31 @@ fetch_resumable() {
 # A tarball rather than a git clone: the server does not need git, does not need
 # the history, and a tarball cannot half-succeed the way a clone can.
 fetch_repo() {
-    local name="$1" url="$2"
+    local name="$1" url="$2" local_dir="${3:-}"
     say "repository: $name"
+
+    local target="$OUT/repos/$name.tar.gz"
+    rm -f "$target"
+
+    # A checkout already on this machine is packed as it stands, and that is the
+    # whole difference between a bundle that can be built here and one that
+    # cannot: this script is meant to run on a machine that CAN reach the
+    # internet, and when that stops being true -- a proxy subscription lapses,
+    # the route is blocked -- the working checkouts are still here.  Refusing to
+    # use them would mean a bundle that cannot be built on the machine holding
+    # everything it needs.
+    #
+    # Packed as a single top-level directory, because setup_server.sh unpacks it
+    # with --strip-components=1, the same shape codeload produces.
+    if [[ -n "$local_dir" && -d "$local_dir" ]]; then
+        note "using the checkout at $local_dir rather than downloading"
+        tar czf "$target" -C "$(dirname "$local_dir")" "$(basename "$local_dir")"
+        gzip -t "$target" 2>/dev/null || die "packing $local_dir produced something that is not a gzip"
+        note "$(du -h "$target" | cut -f1) -> ${target#"$OUT"/}"
+        echo "$name local:$local_dir $url" >> "$OUT/repos/SOURCES.txt"
+        return 0
+    fi
+
     # Recorded so a bundle can be traced back to the commit it came from --
     # `main` moves, and a bundle with no provenance is a bundle nobody can
     # reproduce.  Needs git here only, never on the server.
@@ -145,12 +168,10 @@ fetch_repo() {
     fi
     note "commit $sha"
 
-    local target="$OUT/repos/$name.tar.gz"
-    rm -f "$target"
     fetch_resumable \
         "$(echo "$url" | sed 's|https://github.com/|https://codeload.github.com/|')/tar.gz/refs/heads/main" \
         "$target" \
-        || die "could not download $url after several attempts"
+        || die "could not download $url after several attempts, and there is no checkout at ${local_dir:-<none given>} to pack instead"
     # A tarball that is not a gzip is an error page, and unpacking it later
     # would fail on the server rather than here.
     gzip -t "$target" 2>/dev/null || die "$name.tar.gz is not a gzip archive -- the download is not what it should be"
@@ -160,8 +181,8 @@ fetch_repo() {
     note "recorded in repos/SOURCES.txt so a bundle can be traced to a commit"
 }
 
-fetch_repo DiariZen "$DIARIZEN_REPO"
-fetch_repo LoCoNet_ASD "$LOCONET_REPO"
+fetch_repo DiariZen "$DIARIZEN_REPO" "$MANUAL_DIR/DiariZen"
+fetch_repo LoCoNet_ASD "$LOCONET_REPO" "$MANUAL_DIR/loconet/LoCoNet_ASD"
 
 # --------------------------------------------------------------------------- #
 # model files
