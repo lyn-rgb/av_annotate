@@ -272,13 +272,17 @@ def load_timeline(context: StageContext) -> Timeline:
     )
 
 
-def load_shots(context: StageContext) -> tuple[tuple[int, float, float], ...]:
-    """Shot boundaries as ``(index, start, end)``, 1-based to match the script."""
-
+def shots_path(context: StageContext) -> Path:
     path = context.work_dir / STAGE / SHOTS_NAME
     if not path.is_file():
         raise FileNotFoundError(f"{path} is missing; run {STAGE} first")
-    payload = read_json(path)
+    return path
+
+
+def load_shots(context: StageContext) -> tuple[tuple[int, float, float], ...]:
+    """Shot boundaries as ``(index, start, end)``, 1-based to match the script."""
+
+    payload = read_json(shots_path(context))
     return tuple(
         (int(item["index"]), float(item["start"]), float(item["end"]))
         for item in payload["shots"]

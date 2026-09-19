@@ -300,6 +300,47 @@ All permissive and all fine for the non-commercial research use this project was
 built for. The emotion2vec entry is the one to re-check if the licence ever
 needs to be stated precisely, because no source reconciles the discrepancy.
 
+## Captioning (S10)
+
+```bash
+pip install 'transformers>=4.57' torch
+```
+
+The checkpoint is fetched from Hugging Face on first use. Nothing else is needed,
+and nothing else in this stage touches the audio chain — it reads shots and
+tracks and writes text.
+
+### The memory arithmetic decides which checkpoint fits
+
+The 30B-class mixture-of-experts checkpoint is roughly **61 GB in bf16**, which
+does not fit a 48 GB card. Three ways out, in order of how much they cost you:
+
+| what | roughly | note |
+| --- | --- | --- |
+| fp8 quantisation | ~31 GB | fits, closest to bf16 behaviour |
+| a 4-bit quantisation (AWQ/GPTQ) | ~17 GB | fits comfortably, some quality cost |
+| a smaller dense checkpoint | — | the fallback if either is unavailable |
+
+Point `model` at whichever you choose; `dtype` and `device_map` are passed
+through to `from_pretrained`. The stage's own memory footprint is negligible
+next to this — a handful of stills at 448 px, per request.
+
+### What to verify on the first run
+
+1. **That the frames actually arrived.** Set `max_new_tokens` low and run one
+   video, then read `captions.json`. A caption that describes a generic room
+   rather than the one on screen means the images were dropped rather than
+   erroring, which is the failure this interface is most likely to have.
+2. **The image token budget.** `max_edge` (448 by default) is the lever on cost;
+   the processor may impose its own bounds on top. If captions are vague about
+   small objects, that is where to look first.
+3. **Whether the model obeys the identifier rule.** `summary.json`'s `dropped`
+   count is how often it did not. A handful is expected; a large number means
+   the prompt needs strengthening, not that the check is wrong.
+4. **`device_map` versus `device`.** They are alternatives — setting both is
+   ignored rather than combined, and `device_map="auto"` is usually what you
+   want for a quantised checkpoint that does not fit on one card.
+
 ## Running the pipeline
 
 ```bash
@@ -322,6 +363,8 @@ avannotate run --stage s8-asr       --input videos.txt --output ./outputs \
     --config configs/s8.whisper.json
 avannotate run --stage s9-paralinguistic --input videos.txt --output ./outputs \
     --config configs/s9.paralinguistic.json
+avannotate run --stage s10-caption --input videos.txt --output ./outputs \
+    --config configs/s10.caption.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -342,6 +385,7 @@ Measured here, on CPU, over 26 seconds of video across three clips:
 | S7 (ClearerVoice) | not measured here | GPU; scales with speaking time, not screen time |
 | S8 (faster-whisper) | not measured here | GPU; one decode per segment, so also speech-proportional |
 | S9 (three taggers) | not measured here | GPU; three passes per segment, the delivery model being a generative decode |
+| S10 (Qwen3-VL) | not measured here | GPU; one request per shot, cost driven by images per request |
 
 S1 dominates and is what to profile first on real hardware. `embedding_interval_seconds`
 changes only disk, not runtime: insightface computes the vector as part of its

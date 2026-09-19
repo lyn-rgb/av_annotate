@@ -235,6 +235,99 @@ def iter_window_frames(
         )
 
 
+def iter_sampled_frames(
+    source: Path,
+    *,
+    width: int,
+    height: int,
+    start_time: float,
+    duration: float,
+    count: int,
+    gray: bool = False,
+) -> Iterator[Frame]:
+    """Decode ``count`` frames spread evenly across a span.
+
+    For consumers that want the span *represented* rather than every frame of
+    it -- describing a shot needs a handful of stills, not all three hundred.
+    The sampling is ffmpeg's ``fps`` filter rather than a stride over decoded
+    output, so the frames that are not wanted are never decoded: a twelve-second
+    shot costs four frames of work here and three hundred in
+    :func:`iter_window_frames`.
+
+    The returned frames land at ``start_time + (k + 0.5) * duration / count``
+    give or take the encoder's own frame grid, which is why this is for scene
+    description and not for anything that has to line up with a face track.
+    """
+
+    if count <= 0:
+        raise ValueError(f"count must be positive, got {count}")
+    if duration <= 0.0:
+        raise ValueError(f"duration must be positive, got {duration}")
+
+    channels = 1 if gray else _CHANNELS
+    frame_bytes = width * height * channels
+    if frame_bytes <= 0:
+        raise ValueError(f"invalid frame size {width}x{height}")
+
+    process = subprocess.Popen(
+        [
+            find_ffmpeg(),
+            "-v",
+            "error",
+            "-nostdin",
+            "-ss",
+            f"{max(0.0, start_time):.4f}",
+            "-t",
+            f"{duration:.4f}",
+            "-i",
+            str(source),
+            # One output frame per input interval of this length, so the count
+            # asked for is the count that comes out of a span of this duration.
+            "-vf",
+            f"fps={count / duration:.6f}",
+            "-frames:v",
+            str(count),
+            "-an",
+            "-sn",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray" if gray else "rgb24",
+            "-",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None and process.stderr is not None
+
+    captured: list[bytes] = []
+    drainer = threading.Thread(target=_drain, args=(process.stderr, captured), daemon=True)
+    drainer.start()
+
+    produced = 0
+    try:
+        while produced < count:
+            chunk = process.stdout.read(frame_bytes)
+            if len(chunk) < frame_bytes:
+                break
+            shape = (height, width) if gray else (height, width, channels)
+            yield np.frombuffer(chunk, dtype=np.uint8).reshape(shape).copy()
+            produced += 1
+    finally:
+        process.stdout.close()
+        process.wait()
+        drainer.join(timeout=5.0)
+
+    if produced != count:
+        detail = b"".join(captured).decode("utf-8", "replace").strip()
+        raise FFmpegError(
+            f"decoded {produced} frames from {source.name} across "
+            f"{start_time:.3f}s+{duration:.3f}s, expected {count}"
+            + (f": {detail}" if detail else "")
+        )
+
+
 def read_frame(source: Path, *, width: int, height: int, time: float) -> Frame | None:
     """Decode the single frame at ``time``.
 

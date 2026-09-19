@@ -51,6 +51,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/tse/` | segment planning, the face-track crop video, the extractor |
 | `avannotate/asr/` | source routing, the language vote, words, the recogniser |
 | `avannotate/paralinguistic/` | the tag vocabulary, three models, one tag |
+| `avannotate/caption/` | frame planning, prompts, and the name check |
 | `avannotate/stages/base.py` | contexts, artifacts, and the resume record |
 | `avannotate/stages/s0_preprocess.py` | S0 — probe, demux, shot boundaries |
 | `avannotate/stages/s1_faces.py` | S1 — face detection and identity vectors |
@@ -62,6 +63,7 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s7_tse.py` | S7 — one person's voice, one file per segment |
 | `avannotate/stages/s8_asr.py` | S8 — what each person said, and when |
 | `avannotate/stages/s9_paralinguistic.py` | S9 — how each line was said |
+| `avannotate/stages/s10_caption.py` | S10 — what the video and each shot look like |
 | `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
 
 Everything except the detector call itself is pure Python over JSON, which is
@@ -72,18 +74,18 @@ what makes it testable without a model or a GPU.
 Implemented and tested: **S0 (probe, audio, shots)**, **S1 (detection +
 embeddings)**, **S2 (tracking)**, **S3 (identity clustering)**, **S4
 (diarization)**, **S5 (active speaker detection)**, **S6 (association)**,
-**S7 (target-speaker extraction)**, **S8 (ASR)** and **S9 (paralinguistic
-tagging)**, plus the deliverable format, segmentation, and the QA gates.
-554 tests.
+**S7 (target-speaker extraction)**, **S8 (ASR)**, **S9 (paralinguistic
+tagging)** and **S10 (captioning)**, plus the deliverable format, segmentation,
+and the QA gates. 589 tests.
 
-Not yet implemented: S10 (captioning) and S11 (compose), plus the batch driver.
-See the plan for the stage DAG and model choices.
+Not yet implemented: S11 (compose) and the batch driver. See the plan for the
+stage DAG and model choices.
 
-**S4, S5, S7, S8 and S9 need GPUs and packages that are not installed here.**
-Their model adapters are written against documented interfaces and could not be
-run; each names in its own docstring what to verify first. Everything that
-decides what goes into a model pass, and what its output means, is separate,
-pure, and tested.
+**S4, S5, S7, S8, S9 and S10 need GPUs and packages that are not installed
+here.** Their model adapters are written against documented interfaces and could
+not be run; each names in its own docstring what to verify first. Everything
+that decides what goes into a model pass, and what its output means, is
+separate, pure, and tested.
 
 ### Running it
 
@@ -107,6 +109,8 @@ avannotate run --stage s8-asr     --input data/examples.txt --output ./outputs \
     --config configs/s8.whisper.json
 avannotate run --stage s9-paralinguistic --input data/examples.txt --output ./outputs \
     --config configs/s9.paralinguistic.json
+avannotate run --stage s10-caption --input data/examples.txt --output ./outputs \
+    --config configs/s10.caption.json
 ```
 
 Every stage skips itself when its outputs are present and unchanged, so a rerun
@@ -294,6 +298,50 @@ rather than transcribers and tolerate that better than a recogniser, but this
 trades one error for another, so all three models' full score lists are kept in
 `tags.json` and the QA report surfaces both the count of tags per dimension and
 the close calls.
+
+### S10 tells the model who is in the shot, then checks its answer
+
+Nothing in a still frame says which face is F001. Asking a captioning model to
+*identify* people would be asking it to guess, and a confident guess about who
+someone is cannot be told from a correct one once it is rendered. So the roster
+is computed from tracking and handed over as a constraint — "these frames
+contain tracked people F001, F002; refer to a person by their identifier and use
+no other" — which turns an unanswerable question into an answerable one.
+
+That alone would be a hope rather than a guarantee, so the answer is checked. A
+name the model uses that was not on the roster it was given is removed before the
+caption is written, and the removal is recorded. Nothing downstream reads a
+caption's names, so an unchecked one would ship.
+
+Two kinds of wrong name are told apart, because they mean different things about
+the model: a name that exists nowhere in the video is a hallucination, while a
+real person named in a shot they are not in is a grounding failure. Both are
+stripped; a run with many of one and none of the other is telling you which.
+
+The check is deliberately narrow. It does not judge the description — the model
+may be right that somebody is in the room — it only removes what nothing in this
+pipeline can support.
+
+**Names in captions are bare (`F001`), not bracketed (`<F001>`).** Angle
+brackets in this format belong to the utterance grammar, so a parser that sees
+one should be able to assume a speech line follows. Captions are not utterances.
+
+### What S10 will not do
+
+It does not caption from video. A shot is described from a handful of stills,
+spread across the shot and taken from the middle of each interval rather than
+its edges — the first frame of a shot is the one most likely to be a transition,
+and the last is the one most likely to be a cut. The count follows the shot's
+length up to a cap of eight, because request cost grows with the number of
+images and the tenth frame of a shot adds less than the third.
+
+The video-level caption takes one frame from the start of each shot rather than
+an even spread over the timeline: an even spread lands wherever the cuts happen
+to fall, while one frame per shot covers every distinct scene the video contains.
+
+It also does not caption from the audio. Both levels are visual only — the
+format's own example has no dialogue in either — which is what makes this stage
+independent of S4 through S9 and free to run on any schedule.
 
 ### What S1 will not do
 
