@@ -372,6 +372,49 @@ else
 fi
 
 # --------------------------------------------------------------------------- #
+# the 275 MB that does not have to be downloaded
+# --------------------------------------------------------------------------- #
+#
+# Building LoCoNet makes the repository's in-tree torchvggish fetch VGGish's
+# pretrained weights from a GitHub release -- and LoCoNet's own checkpoint then
+# overwrites every one of them, because it carries the same tensors under
+# "audioEncoder".  So the download is pure waste, and on a machine that cannot
+# reach GitHub it is a hard failure at the first video rather than a slow start.
+#
+# torch's hub cache is keyed by filename, so seeding it from the checkpoint is
+# enough: torchvggish asks for vggish-10086976.pth and gets this.  It is here
+# rather than in setup_server.sh because this is the script that owns the
+# environment, and the one place a working torch is guaranteed to exist.
+
+say "torch's VGGish cache"
+VGGISH="${TORCH_HOME:-$HOME/.cache/torch}/hub/checkpoints/vggish-10086976.pth"
+LOCO_CHECKPOINT="$ROOT/models/loconet/loconet_AVA.model"
+if [[ -f "$VGGISH" ]]; then
+    note "already seeded: $VGGISH"
+elif [[ ! -f "$LOCO_CHECKPOINT" ]]; then
+    warn "nothing to seed it from: $LOCO_CHECKPOINT is not here."
+    warn "The first S5 will try to fetch 275 MB from a GitHub release, which"
+    warn "is exactly what that checkpoint exists to avoid."
+else
+    "$PY" - "$LOCO_CHECKPOINT" "$VGGISH" <<'PYEOF' \
+        || warn "could not seed it; S5 will try the download instead"
+import os, sys
+import torch
+
+source, target = sys.argv[1], sys.argv[2]
+state = torch.load(source, map_location="cpu", weights_only=True)
+inner = "model.module.model.audioEncoder."
+audio = {k[len(inner):]: v for k, v in state.items() if k.startswith(inner)}
+if not audio:
+    raise SystemExit("no audioEncoder weights under that prefix")
+os.makedirs(os.path.dirname(target), exist_ok=True)
+torch.save(audio, target)
+print(f"   {target}: {os.path.getsize(target) // 1024 // 1024} MB "
+      f"from {len(audio)} of the checkpoint's tensors")
+PYEOF
+fi
+
+# --------------------------------------------------------------------------- #
 # can this environment see the hardware
 # --------------------------------------------------------------------------- #
 #
