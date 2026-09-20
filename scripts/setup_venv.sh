@@ -97,6 +97,42 @@ pick_python() {
     die "no python3 on PATH.  Install one (apt install python3.10 python3.10-venv) and re-run."
 }
 
+# Put pip into a venv that was created without it.
+#
+# Three routes, tried in order, because each has a precondition the others do
+# not.  The first is the one that matters on a cluster: the base interpreter
+# was chosen precisely because it has pip, and pip can be told to act on
+# another environment -- which needs pip >= 22.3, old enough now that anything
+# still shipping an older one is the exception.
+bootstrap_pip() {
+    if "$PYTHON" -m pip --python "$VENV/bin/python" install --upgrade pip setuptools wheel \
+        >/dev/null 2>&1; then
+        note "pip taken from the base interpreter"
+        return 0
+    fi
+
+    # The official bootstrap script.  Needs a route to PyPI, which is exactly
+    # what a locked-down cluster may not have -- but on a machine that has one,
+    # it is the most reliable of the three.
+    local script="/tmp/get-pip.$$"
+    if curl -fsSL --connect-timeout 20 --max-time 120 \
+        https://bootstrap.pypa.io/get-pip.py -o "$script" 2>/dev/null; then
+        if "$VENV/bin/python" "$script" >/dev/null 2>&1; then
+            rm -f "$script"
+            note "pip bootstrapped with get-pip.py"
+            return 0
+        fi
+    fi
+    rm -f "$script"
+
+    # virtualenv brings its own pip wheels, so it needs no network at all.
+    if have virtualenv && virtualenv -p "$PYTHON" --clear "$VENV" >/dev/null 2>&1; then
+        note "pip provided by virtualenv"
+        return 0
+    fi
+    return 1
+}
+
 pick_python
 PYVER="$("$PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 case "$PYVER" in
@@ -147,20 +183,55 @@ elif [[ -e "$VENV" ]]; then
 fi
 
 if (( VENV_USABLE == 0 )); then
-    # `python -m venv` needs the venv module, which Debian and Ubuntu ship in a
-    # separate package.  The stock error for that is a wall of text about
-    # ensurepip that does not name the package, so it is named here.
-    if ! "$PYTHON" -m venv "$VENV" 2>/tmp/venv_err.$$; then
-        sed 's/^/   /' /tmp/venv_err.$$ >&2
-        rm -f /tmp/venv_err.$$
-        die "could not create the venv. On Debian/Ubuntu this is usually the missing
-'venv' module, which is a separate package:
-    apt-get install -y python$PYVER-venv
-On RHEL/Rocky it is part of python3.  Then re-run this script."
+    VENV_ERR="/tmp/venv_err.$$"
+    if "$PYTHON" -m venv "$VENV" 2>"$VENV_ERR"; then
+        note "created"
+    else
+        printf '   the standard route failed; its output was:\n' >&2
+        sed 's/^/     /' "$VENV_ERR" >&2
+
+        # Nearly every failure here is ensurepip.  `venv` can make the
+        # directory; it cannot put pip in it, because Debian, Ubuntu and most
+        # HPC images ship pip's bootstrap wheels separately from the
+        # interpreter -- and on a cluster there is no root to install them
+        # with, so "apt-get install python3.X-venv" is advice nobody can take.
+        #
+        # The interpreter is not broken.  It just needs pip from somewhere
+        # else, and there are three ways to get it.
+        if ! grep -qi 'ensurepip\|Failing command' "$VENV_ERR"; then
+            rm -f "$VENV_ERR"
+            die "could not create the venv, and not for the usual reason -- the
+output above is not about ensurepip.  Check the interpreter:
+    $PYTHON -m venv /tmp/probe-venv"
+        fi
+
+        note ""
+        note "that is ensurepip, which this machine's Python does not ship."
+        note "The interpreter itself is fine, so this builds the venv without"
+        note "pip and then gets pip by another route."
+        rm -f "$VENV_ERR"
+
+        # --clear rather than rm -rf: the directory was made moments ago by the
+        # attempt above, and this is the venv module's own way to empty it.
+        "$PYTHON" -m venv --without-pip --clear "$VENV" \
+            || die "even 'venv --without-pip' failed; this interpreter cannot make
+virtual environments at all.  On a cluster the usual answers are a python
+module (module avail python; module load python/3.11) or conda, and then:
+    scripts/setup_venv.sh --python \$(which python3.11)"
+
+        bootstrap_pip || die "the venv exists but pip could not be put into it.
+Tried, in order:
+  1. $PYTHON -m pip --python <venv> install pip     (needs pip >= 22.3)
+  2. curl https://bootstrap.pypa.io/get-pip.py      (needs a route to PyPI)
+  3. virtualenv                                     (needs virtualenv)
+At least one of those has to work before this can continue.  On a cluster with
+none of them, ask for a python module that ships pip."
+
+        note "created (without ensurepip)"
     fi
-    rm -f /tmp/venv_err.$$
-    note "created"
 fi
+
+note "pip $("$VENV/bin/python" -m pip --version 2>/dev/null | awk '{print $2}')"
 
 PY="$VENV/bin/python"
 PIP=("$PY" -m pip)
