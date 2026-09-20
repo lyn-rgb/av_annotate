@@ -33,6 +33,25 @@ if [[ ! -x "$PYTHON" ]]; then PYTHON="${PYTHON_FALLBACK:-python3}"; fi
 # it.
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
+# Where the weights are.  download_models.sh puts them under the checkout, and
+# the configs name their checkpoints by repo id -- so this is the difference
+# between a run finding 26 GB of already-downloaded models and huggingface_hub
+# looking in ~/.cache/huggingface, finding nothing, and either failing or
+# fetching all of it again.  `${VAR:-}` so an operator who set these meant it.
+export HF_HOME="${HF_HOME:-$ROOT/models/hf}"
+# funasr reads emotion2vec from ModelScope's own cache, which is the other
+# convention in this pipeline and the other place a path has to agree.
+export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-$ROOT/models/modelscope}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+
+# HF_HUB_OFFLINE is deliberately NOT set here.  It is what makes a cached
+# checkpoint resolve without asking the network, so on a server with no route to
+# huggingface.co it is required -- but it also turns every miss into a hard
+# failure rather than a download, and that is a decision rather than a default.
+# Set it on such a server:
+#
+#     export HF_HUB_OFFLINE=1
+
 DATA=""
 LIST=""
 OUTPUT=""

@@ -56,19 +56,27 @@ export HF_HOME=/path/to/models/hf
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-**On a machine with no route abroad, add these two as well:**
+**`run_batch.sh` sets `HF_HOME`, `MODELSCOPE_CACHE` and `HF_ENDPOINT` itself**,
+pointing at the checkout's `models/`, so a run finds what `download_models.sh`
+put there without any exporting. All three still respect an existing value.
+That matters more than it looks: the configs name their checkpoints by repo id,
+so with the cache in the wrong place `huggingface_hub` looks in
+`~/.cache/huggingface`, finds nothing, and either fails or fetches all 26 GB a
+second time.
+
+**On a machine with no route to huggingface.co, one more is needed:**
 
 ```bash
 export HF_HUB_OFFLINE=1
-export MODELSCOPE_CACHE=/path/to/models/modelscope
 ```
 
-`HF_HUB_OFFLINE=1` is what makes a pre-fetched checkpoint actually get used.
-Without it, `from_pretrained` and `snapshot_download` still ask the network to
-resolve `main` before they consult the cache, so a machine with no route out
-fails on a checkpoint that is sitting right there on disk — which reads as the
-download never having happened. Set it only once the download has reported
-`ok`; with it set, nothing new can be fetched.
+This is the one that cannot be defaulted, and it is the difference between a
+cached checkpoint resolving and the same checkpoint being reported missing.
+Without it, `from_pretrained` asks the network to resolve `main` before it
+consults the cache at all — so a machine with no route out fails on a model
+that is sitting right there on disk. It is not set by default because it also
+turns every miss into a hard failure instead of a download, which is a decision
+rather than a default. Set it once `download_models.sh` has reported `ok`.
 
 `MODELSCOPE_CACHE` is where `funasr` looks for emotion2vec, and it has to match
 the path `download_models.sh` wrote into. Ordering matters for that one
