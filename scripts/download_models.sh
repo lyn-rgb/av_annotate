@@ -311,13 +311,39 @@ else:
 snapshot.mkdir(parents=True, exist_ok=True)
 
 
-def fetch(url, dest):
-    """Resume a partial file; start over if resuming is not honoured."""
+def fetch(url, dest, show=False):
+    """Resume a partial file; start over if resuming is not honoured.
+
+    Three things here are load-bearing on a cluster, and all three were learned
+    the hard way:
+
+    * **No `--noproxy '*'`.**  It forces a direct connection, which is right on
+      a laptop and hangs forever on a cluster that requires an HTTP proxy for
+      outbound traffic.  Left alone, curl honours `http_proxy`/`https_proxy`
+      and `no_proxy`, which is what the operator configured and what every
+      other tool on the machine is already using.
+    * **`--speed-limit`/`--speed-time`.**  A connection that opens and then
+      stops moving is not an error as far as curl is concerned, so without
+      these it waits forever -- and `--retry` never fires, because nothing
+      failed.  Under 1 KB/s for 60s is a stall, and aborting it turns a hang
+      into a retry.
+    * **Progress for anything large.**  Suppressed output makes "slow" and
+      "stuck" identical from the outside, which is exactly the wrong thing to
+      be unable to tell apart on a 143 MB download.
+    """
     resume = ["-C", "-"] if dest.exists() and dest.stat().st_size else []
+    # -f and -L are not decoration.  ModelScope answers a file request with a
+    # redirect to its CDN -- `cdn-lfs-cn-1.modelscope.cn` -- so without -L curl
+    # saves the 337-byte HTML stub that names the real URL, and without -f it
+    # exits 0 having done so.  The result is a "downloaded" model of 337 bytes
+    # that only fails later, at load time.  Dropping either one while adding
+    # --progress-bar is exactly how that happened once.
+    quiet = ["--progress-bar", "-fLS"] if show else ["-fsSL"]
     for extra in (resume, []):
         result = subprocess.run([
-            "curl", "-fsSL", *extra, "--retry", "3", "--retry-delay", "2",
-            "--connect-timeout", "30", "--noproxy", "*", "-o", str(dest), url,
+            "curl", *quiet, *extra, "--retry", "3", "--retry-delay", "2",
+            "--connect-timeout", "30", "--speed-limit", "1024", "--speed-time", "60",
+            "-o", str(dest), url,
         ])
         if result.returncode == 0:
             return True
@@ -342,7 +368,7 @@ for entry in files:
     url = f"{API}/repo?" + urllib.parse.urlencode(
         {"Revision": branch, "FilePath": relative}
     )
-    if not fetch(url, dest):
+    if not fetch(url, dest, show=size >= ANNOUNCE):
         fail(f"could not download {relative}")
 
     # Checked per file rather than once at the end: a 4 GB shard that arrived
@@ -431,9 +457,11 @@ ms_file() {
     local encoded url
     encoded="$("$PYTHON" -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$path")"
     url="https://www.modelscope.cn/api/v1/models/$repo/repo?Revision=master&FilePath=$encoded"
-    # --noproxy, like ms_fetch: a domestic host reached directly.  Resumed and
-    # size-checked like every other fetch here.
-    if curl -fsSL -C - --retry 3 --retry-delay 2 --connect-timeout 30 --noproxy '*' \
+    # Proxy settings are left alone, and a stalled transfer is aborted rather
+    # than waited on -- see the note above ms_fetch's fetch() for why both
+    # matter on a cluster.
+    if curl -fsSL -C - --retry 3 --retry-delay 2 --connect-timeout 30 \
+        --speed-limit 1024 --speed-time 60 \
         -o "$dest" "$url" 2>/dev/null && (( $(wc -c < "$dest") >= floor )); then
         echo "ok   ($why, from ModelScope)"
         return 0
