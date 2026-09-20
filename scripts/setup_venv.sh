@@ -237,12 +237,40 @@ PY="$VENV/bin/python"
 PIP=("$PY" -m pip)
 
 say "pip, setuptools, wheel"
+
+# What pip will actually talk to, before it starts talking.  pip reads more
+# than one index, and a container can leave a second one behind that no flag
+# here undoes: the NGC PyTorch images ship
+# `extra-index-url = https://pypi.ngc.nvidia.com`, which does not resolve
+# outside NVIDIA -- so every install retries a host that will never answer, and
+# the error names that host rather than the index you thought you set.
+# `--index-url` on the command line overrides the *main* index and cannot
+# remove an extra one; only the environment or the config file can.
+note "pip will use:"
+PIP_CONFIG="$("${PIP[@]}" config list 2>/dev/null || true)"
+if [[ -n "$PIP_CONFIG" ]]; then
+    printf '%s\n' "$PIP_CONFIG" | sed 's/^/     /'
+else
+    note "     (nothing configured; pip's own defaults for anything this"
+    note "      script does not pass explicitly)"
+fi
+if [[ -n "${PIP_EXTRA_INDEX_URL:-}" ]]; then
+    note "     PIP_EXTRA_INDEX_URL is set in the environment:"
+    note "       $PIP_EXTRA_INDEX_URL"
+fi
+
 # --upgrade first: a venv created from an older interpreter ships a pip that
 # cannot read the metadata of some modern wheels, and the failure it produces
 # looks like the package not existing.
 "${PIP[@]}" install --quiet --upgrade pip setuptools wheel \
     --index-url "$PIP_INDEX" \
-    || die "could not upgrade pip; check the index ($PIP_INDEX) and the network"
+    || die "could not upgrade pip.  The index this script is using is
+    $PIP_INDEX
+but pip may also be reading an extra one from a config file -- the line above
+lists what it will actually contact, and anything unreachable has to go from
+there rather than from the command line:
+    python -m pip config debug     # says which file, and which line
+    export PIP_EXTRA_INDEX_URL=    # or clear it for this shell"
 note "pip $("$PY" -m pip --version | awk '{print $2}')"
 
 # --------------------------------------------------------------------------- #
