@@ -130,9 +130,19 @@ install_repo() {
         tar xzf "$tarball" -C "$dest" --strip-components=1
     else
         note "cloning $name from $url"
-        git clone --depth 1 "$url" "$dest" \
+        # --recurse-submodules matters for DiariZen, and its absence is silent:
+        # the vendored pyannote-audio and dscore are submodules, so a plain
+        # --depth 1 clone leaves both as empty directories -- and the check for
+        # "$DEST/pyannote-audio" below then succeeds on an empty directory and
+        # skips the install that was the point of it.
+        git clone --depth 1 --recurse-submodules --shallow-submodules "$url" "$dest" \
             || die "cloning $name failed; if this machine has no GitHub access, \
 build a bundle elsewhere with scripts/make_offline_bundle.sh and pass --from-bundle"
+        if [[ -d "$dest/pyannote-audio" && -z "$(ls -A "$dest/pyannote-audio")" ]]; then
+            warn "$dest/pyannote-audio is an empty directory -- its submodule did"
+            warn "not come down.  Fetch it with:"
+            warn "    git -C $dest submodule update --init --recursive --depth 1"
+        fi
     fi
 }
 
