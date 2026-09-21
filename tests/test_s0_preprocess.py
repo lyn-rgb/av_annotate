@@ -9,7 +9,9 @@ import pytest
 
 from avannotate.ffmpeg import (
     FFmpegError,
+    choose_encoder,
     detect_cuts,
+    encoder_names,
     probe_media,
     scene_scores,
     shots_from_cuts,
@@ -227,3 +229,48 @@ def test_sample_corpus_probes_and_demuxes(sample_videos: tuple[Path, ...], tmp_p
         # Every sample is already 16 kHz mono, so the delta is pure AAC padding
         # and must stay small.  A large one would mean the demux went wrong.
         assert 0.0 <= timeline.audio_delta < 0.2
+
+
+# --------------------------------------------------------------------------- #
+# which video encoder the cropped clips get
+# --------------------------------------------------------------------------- #
+
+
+def test_encoder_names_reads_a_listing_but_not_its_headings() -> None:
+    """``-encoders`` output has headings, blanks, and one line per encoder."""
+
+    listing = (
+        "Encoders:\n"
+        " V..... = Video\n"
+        " ------\n"
+        " V....D libx264              H.264 / AVC (codec h264)\n"
+        " V....D libx264rgb           H.264 / AVC (codec h264)\n"
+        " A....D aac                  AAC (Advanced Audio Coding)\n"
+    )
+    names = encoder_names(listing)
+    assert "libx264" in names
+    assert "aac" in names
+    # A different encoder with a longer name must not stand in for the shorter
+    # one -- substring matching here would silently pick the wrong codec.
+    assert "libx264rgb" in names
+
+
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [
+        ({"libx264", "mpeg4"}, "libx264"),
+        # A --disable-gpl build: no x264, no x265, and openh264 instead.
+        ({"libopenh264", "h264_nvenc", "mpeg4"}, "libopenh264"),
+        ({"h264_nvenc", "mpeg4"}, "h264_nvenc"),
+        ({"mpeg4"}, "mpeg4"),
+    ],
+)
+def test_choose_encoder_takes_the_best_one_present(
+    available: set[str], expected: str
+) -> None:
+    assert choose_encoder(available) == expected
+
+
+def test_choose_encoder_says_so_when_there_is_nothing_to_choose() -> None:
+    with pytest.raises(FFmpegError, match="none of"):
+        choose_encoder({"libvpx", "libaom-av1"})

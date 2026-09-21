@@ -102,11 +102,22 @@ def iter_tiles(
 
 
 #: Quality flags per codec, for the ones :func:`video_encoder` can return.
-#: 18 is x264's visually-lossless-ish CRF; mpeg4's scale runs the other way and
-#: lower is better, so 3 is the comparable setting rather than 18.
+#:
+#: CRF where the encoder has a quality scale this module is sure of -- x264 and
+#: x265, where 18 and 20 are the visually-lossless-ish settings.  Bitrate
+#: everywhere else, because ``-b:v`` is generic ffmpeg and every encoder takes
+#: it, while the per-encoder quality knobs differ in both name and meaning:
+#: nvenc's ``-cq`` and its ``-preset`` values changed names across versions, and
+#: guessing them wrong is not an error ffmpeg is obliged to raise.
+#:
+#: 4 Mbps is deliberately generous.  These are 224x224 clips of one face, so it
+#: is far more than the resolution needs -- the point is to be sure the setting
+#: is not what limits the lip detail the extractor reads.
 _QUALITY_ARGS = {
     "libx264": ("-preset", "veryfast", "-crf", "18"),
     "libx265": ("-preset", "veryfast", "-crf", "20"),
+    "libopenh264": ("-b:v", "4M"),
+    "h264_nvenc": ("-b:v", "4M"),
     "mpeg4": ("-qscale:v", "3"),
 }
 
