@@ -299,14 +299,34 @@ if needs_torch; then
     # as a confusing "no CUDA device" three stages later.  And the packages
     # below (pyannote, funasr, clearvoice) all depend on torch, so resolving it
     # once, first, keeps pip from reconsidering it while resolving them.
+    # Pinned, and this pin is load-bearing rather than caution.
+    #
+    # The vendored pyannote-audio inside DiariZen does
+    # `from torchaudio import AudioMetaData` at module scope.  torchaudio
+    # deprecated that name in 2.8 and removed it in 2.9, so an unpinned install
+    # gets 2.9 or later and S4 dies at import on a name that no longer exists --
+    # while every other stage would have been perfectly happy.  The import is
+    # what kills it; the one construction of it is on a training path this
+    # pipeline never runs.
+    #
+    # 2.8 is therefore the last usable release, and it is recent enough for
+    # everything else here: the 4090 is sm_89, comfortably inside its kernels,
+    # and transformers has no trouble with it.  DiariZen's own constraints.txt
+    # pins 2.1.1, which is further back than anything else here wants to go.
+    #
+    # Override with TORCH_PIN=2.9.* if the vendored pyannote is ever updated.
+    pin="${TORCH_PIN:-2.8.*}"
     say "PyTorch"
     if [[ -n "$TORCH_INDEX" ]]; then
         note "index: $TORCH_INDEX"
-        "${PIP[@]}" install --upgrade torch torchaudio --index-url "$TORCH_INDEX" \
+        note "pinned to $pin (see the comment in this script)"
+        "${PIP[@]}" install --upgrade "torch==$pin" "torchaudio==$pin" \
+            --index-url "$TORCH_INDEX" \
             || die "installing torch from $TORCH_INDEX failed"
     else
         note "index: $PIP_INDEX"
-        "${PIP[@]}" install --upgrade torch torchaudio \
+        note "pinned to $pin (see the comment in this script)"
+        "${PIP[@]}" install --upgrade "torch==$pin" "torchaudio==$pin" \
             --index-url "$PIP_INDEX" \
             || die "installing torch failed"
     fi
