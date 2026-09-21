@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -24,6 +27,54 @@ from avannotate.ffmpeg import FFmpegError, video_encoder
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DIR = REPO_ROOT / "data" / "examples"
+
+
+class _Absent:
+    """A meta-path finder that refuses one module and its submodules."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def find_spec(self, fullname: str, path: object = None, target: object = None) -> None:
+        if fullname == self.name or fullname.startswith(self.name + "."):
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+
+@pytest.fixture
+def absent_module() -> Callable[[str], contextmanager[None]]:
+    """Make a module unimportable, whatever this machine actually has.
+
+    Two tests assert the message a stage gives when its optional dependency is
+    missing.  Both were written to "run for real" by relying on the machine not
+    having it -- which holds on a development box and fails on a server, where
+    the dependency is installed because the pipeline needs it.  The test that
+    was meant to check the error path ends up checking nothing and failing.
+
+    Both halves are needed: dropping it from ``sys.modules`` is not enough,
+    because the next import would find it on disk again, and a meta-path finder
+    alone is not enough either, because an already-imported module never
+    consults one.
+    """
+
+    @contextmanager
+    def _absent(name: str) -> Iterator[None]:
+        saved = {
+            key: value
+            for key, value in sys.modules.items()
+            if key == name or key.startswith(name + ".")
+        }
+        for key in saved:
+            del sys.modules[key]
+        finder = _Absent(name)
+        sys.meta_path.insert(0, finder)
+        try:
+            yield
+        finally:
+            sys.meta_path.remove(finder)
+            sys.modules.update(saved)
+
+    return _absent
 
 
 def _ffmpeg() -> str:

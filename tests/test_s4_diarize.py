@@ -234,10 +234,16 @@ def test_loaders_fail_loudly_when_the_stage_has_not_run(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_diarizen_absent_gives_install_instructions() -> None:
-    """Runs for real here: DiariZen is not installed on this machine."""
+def test_diarizen_absent_gives_install_instructions(absent_module) -> None:
+    """The error path, exercised whether or not this machine has the package.
 
-    with pytest.raises(DiarizerError, match="github.com/BUTSpeechFIT/DiariZen"):
+    It used to rely on DiariZen being absent, which is true on a development
+    box and false on any machine that runs S4.
+    """
+
+    with absent_module("diarizen"), pytest.raises(
+        DiarizerError, match="github.com/BUTSpeechFIT/DiariZen"
+    ):
         build_diarizer({"backend": "diarizen"})
 
 

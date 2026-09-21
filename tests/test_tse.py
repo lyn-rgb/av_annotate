@@ -299,10 +299,14 @@ def test_slice_samples_beyond_the_buffer_is_empty_not_an_error() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_clearvoice_absent_gives_install_instructions() -> None:
-    """Runs for real here: ClearerVoice is not installed on this machine."""
+def test_clearvoice_absent_gives_install_instructions(absent_module) -> None:
+    """The error path, exercised whether or not this machine has the package.
 
-    with pytest.raises(TseError, match="pip install clearvoice"):
+    It used to rely on ClearerVoice being absent, which is true on a
+    development box and false on any machine that runs S7.
+    """
+
+    with absent_module("clearvoice"), pytest.raises(TseError, match="pip install clearvoice"):
         build_extractor({"backend": "clearvoice"})
 
 
