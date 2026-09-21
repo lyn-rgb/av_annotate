@@ -47,42 +47,72 @@ rejects a bare string -- and whether ``itertracks`` yields the tuple shape above
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
 from avannotate.audio.types import DiarizationResult, SpeakerTurn
 
+#: The classes pyannote's checkpoints reference that torch's ``weights_only``
+#: loader does not allow by default.
+#:
+#: Enumerated from the files rather than guessed.  ``pickletools.genops`` walks
+#: a checkpoint's pickle stream without executing any of it -- no unpickling, no
+#: imports, no code run -- and across every checkpoint this pipeline loads,
+#: these four are the whole non-default set.  DiariZen's own checkpoint needs
+#: none of them (plain ``torch._utils._rebuild_tensor_v2``, allowed by default);
+#: they all come from the wespeaker embedding model pyannote pulls in.
+#:
+#: Finding them one traceback at a time is the alternative, and it costs a
+#: failed run per class.
+_SAFE_GLOBALS = (
+    ("torch.torch_version", "TorchVersion"),
+    ("pyannote.audio.core.task", "Specifications"),
+    ("pyannote.audio.core.task", "Resolution"),
+    ("pyannote.audio.core.task", "Problem"),
+)
 
-def _allow_torch_version_stamp() -> None:
+
+def _allow_checkpoint_globals() -> None:
     """Let torch load pyannote's checkpoints again.
 
     PyTorch 2.6 changed ``torch.load``'s default from ``weights_only=False`` to
     ``True``, which refuses to unpickle anything not on an allowlist.  The
-    pyannote checkpoints DiariZen loads -- the wespeaker embedding model among
-    them -- were written before that and carry a ``TorchVersion`` stamp, so the
-    load now fails with ``UnpicklingError: Unsupported global:
-    torch.torch_version.TorchVersion``.
+    pyannote checkpoints were written before that and carry a ``TorchVersion``
+    stamp and three ``pyannote.audio.core.task`` enums, so the load fails with
+    ``UnpicklingError: Unsupported global: ...``.
 
-    ``add_safe_globals`` is what the error itself suggests, and ``TorchVersion``
-    is a version string with comparison operators on it -- the smallest possible
-    thing to allow, and much better than the alternative the error also offers,
-    which is turning ``weights_only`` off for every checkpoint this process
-    ever loads.
+    ``add_safe_globals`` is what the error itself suggests, and a version string
+    and three enums are the smallest thing that makes these files load.  The
+    other option the error offers -- turning ``weights_only`` off -- would drop
+    that check for every checkpoint this process ever loads, which is a much
+    larger thing to give up for four benign classes.
 
-    Process-wide and idempotent, and called here rather than at import time so
-    that importing this module does not quietly change torch's behaviour for
-    everything else in the interpreter.
+    Process-wide and idempotent, and called at the point of use rather than at
+    import time, so that importing this module does not quietly change torch's
+    behaviour for everything else in the interpreter.
     """
     try:
         import torch
     except ModuleNotFoundError:  # pragma: no cover - torch is required for S4
         return
-    serialization = getattr(torch, "serialization", None)
-    add = getattr(serialization, "add_safe_globals", None)
-    version = getattr(getattr(torch, "torch_version", None), "TorchVersion", None)
-    if add is not None and version is not None:
-        add([version])
+    add = getattr(getattr(torch, "serialization", None), "add_safe_globals", None)
+    if add is None:  # torch older than 2.6: nothing needs allowing
+        return
+    allowed = []
+    for module_name, class_name in _SAFE_GLOBALS:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            # Only reachable if pyannote is absent, in which case the pipeline
+            # this guards cannot be built anyway and its own error is clearer.
+            continue
+        found = getattr(module, class_name, None)
+        if found is not None:
+            allowed.append(found)
+    if allowed:
+        add(allowed)
 
 #: v2 handles up to four overlapping speakers; v1 merges extra speakers into its
 #: arrival-order slots.  The default is v2 because simultaneous speech is the
@@ -151,7 +181,7 @@ class DiariZenDiarizer:
         #   and on a cold one it fails, which is the worst way round.
         # * **No device.**  It is chosen inside from ``torch.cuda.is_available()``
         #   and corrected afterwards in ``_place_on``.
-        _allow_torch_version_stamp()
+        _allow_checkpoint_globals()
         try:
             self._pipeline = DiariZenPipeline.from_pretrained(model)
         except TypeError as error:
