@@ -54,6 +54,41 @@ class TargetSpeakerExtractor(Protocol):
         ...
 
 
+def _pin_clearvoice_device() -> None:
+    """Make clearvoice's GPU chooser agree with this process's view of the GPUs.
+
+    clearvoice picks a card by running ``nvidia-smi`` and taking whichever has
+    the most free memory.  ``nvidia-smi`` lists every physical device and
+    ignores ``CUDA_VISIBLE_DEVICES``; ``torch.cuda.set_device`` does not.  In a
+    batch worker -- where the pool has already restricted this process to one
+    card -- the chooser therefore returns an index that means nothing here, and
+    ``torch.cuda.set_device`` raises ``CUDA error: invalid device ordinal``.
+
+    It is not a rare race.  The chooser takes the *freest* card, so it returns 0
+    only when card 0 happens to be the idlest -- during a four-worker batch,
+    almost never.  S7 would fail on nearly every video, and the error names a
+    device rather than anything about device selection.
+
+    Inside this process there is exactly one correct answer: device 0, because
+    ``CUDA_VISIBLE_DEVICES`` has already made the assigned card the only one
+    this process can see.
+
+    Monkeypatching a library's internals is not free, and it is done here
+    because there is no other way in: ``ClearVoice``'s public constructor takes
+    a task and model names and nothing else, and the device is chosen inside
+    the model's own ``__init__``.  Done once per process, and only for the
+    chooser -- nothing else about the library is touched.
+    """
+    try:
+        from clearvoice.networks import SpeechModel
+    except (ImportError, AttributeError):  # pragma: no cover - layout changed
+        return
+    if getattr(SpeechModel, "_avannotate_device_pinned", False):
+        return
+    SpeechModel.get_free_gpu = lambda self: 0
+    SpeechModel._avannotate_device_pinned = True
+
+
 class ClearerVoiceExtractor:
     """``AV_MossFormer2_TSE_16K`` behind :class:`TargetSpeakerExtractor`."""
 
@@ -71,6 +106,7 @@ class ClearerVoiceExtractor:
 
         self.model_name = model_name
         self.device = device
+        _pin_clearvoice_device()
         self._model = ClearVoice(
             task="target_speaker_extraction", model_names=[model_name]
         )
