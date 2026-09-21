@@ -4,6 +4,12 @@ Video fixtures are generated with ffmpeg rather than committed, so the suite
 runs anywhere ffmpeg exists instead of only where the sample corpus was copied.
 The generated clips are deliberately tiny -- a few hundred kilobytes and a few
 seconds -- because their job is to exercise the plumbing, not the models.
+
+The encoder is asked of ffmpeg rather than named here.  These fixtures used to
+say ``libx264`` outright, which made the whole suite unrunnable on a build
+without it -- and that is not a rare build: x264 is GPL, so cluster images
+routinely leave it out.  The suite is meant to run wherever ffmpeg is, and
+naming a codec it may not have contradicted that.
 """
 
 from __future__ import annotations
@@ -14,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from avannotate.ffmpeg import FFmpegError, video_encoder
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DIR = REPO_ROOT / "data" / "examples"
 
@@ -23,6 +31,16 @@ def _ffmpeg() -> str:
     if executable is None:
         pytest.skip("ffmpeg is not installed")
     return executable
+
+
+def _codec() -> str:
+    """An encoder this ffmpeg has, skipping the test if it has none of them."""
+
+    _ffmpeg()
+    try:
+        return video_encoder()
+    except FFmpegError as error:
+        pytest.skip(str(error))
 
 
 def _generate(target: Path, *args: str) -> Path:
@@ -53,7 +71,7 @@ def single_shot_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "-i",
         "sine=frequency=440:sample_rate=16000:duration=3",
         "-c:v",
-        "libx264",
+        _codec(),
         "-pix_fmt",
         "yuv420p",
         "-c:a",
@@ -93,7 +111,7 @@ def two_shot_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "-map",
         "2:a",
         "-c:v",
-        "libx264",
+        _codec(),
         "-pix_fmt",
         "yuv420p",
         "-c:a",
@@ -112,7 +130,7 @@ def video_without_audio(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "-i",
         "testsrc2=size=320x240:rate=25:duration=2",
         "-c:v",
-        "libx264",
+        _codec(),
         "-pix_fmt",
         "yuv420p",
     )

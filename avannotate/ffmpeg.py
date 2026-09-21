@@ -18,6 +18,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from fractions import Fraction
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,60 @@ def find_ffprobe() -> str:
     """
 
     return _locate("ffprobe", env_var="AVANNOTATE_FFPROBE")
+
+
+#: Video encoders to encode the cropped clips with, best first.
+#:
+#: libx264 first because it is the best of these at the bitrate a lip crop
+#: needs.  But it is GPL, so a build may legitimately lack it -- cluster images
+#: frequently do -- and this used to be hardcoded.  That hardcoding was latent
+#: rather than broken: it only fails once a stage actually has a clip to write,
+#: so a run where nothing was assigned never touched it and looked fine.
+#:
+#: mpeg4 is the floor.  It is native to ffmpeg, needs no external library, and
+#: is in every build; it is also a visibly worse codec, which is why it is a
+#: fallback and not a default.  The crop is what a lip-reading model looks at,
+#: and how much quality to trade away is not a decision to make by accident.
+_ENCODER_PREFERENCE = ("libx264", "libx265", "mpeg4")
+
+
+@lru_cache(maxsize=1)
+def video_encoder() -> str:
+    """The best video encoder this ffmpeg actually has.
+
+    Asked of ffmpeg rather than assumed, because the answer is a property of
+    the build and not of this project.
+    """
+
+    result = subprocess.run(
+        [find_ffmpeg(), "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise FFmpegError(
+            f"ffmpeg could not list its encoders: {result.stderr.strip()[:200]}"
+        )
+
+    # Lines look like ` V....D libx264   H.264 ...`; the first field is the
+    # name.  Matched as whole words so `libx264rgb` does not answer for
+    # `libx264`.
+    available = {
+        line.split()[1]
+        for line in result.stdout.splitlines()
+        if len(line.split()) > 1
+    }
+    for candidate in _ENCODER_PREFERENCE:
+        if candidate in available:
+            return candidate
+    raise FFmpegError(
+        "this ffmpeg has none of "
+        + ", ".join(_ENCODER_PREFERENCE)
+        + " -- it cannot encode the cropped clips S7 writes.  A build with "
+        "libx264 is the usual fix; on a machine with no package manager, "
+        "`ffmpeg -encoders` says what it does have."
+    )
 
 
 def _run(command: list[str], *, what: str) -> subprocess.CompletedProcess[str]:

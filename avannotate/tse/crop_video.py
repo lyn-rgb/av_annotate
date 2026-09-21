@@ -31,7 +31,7 @@ from numpy.typing import NDArray
 from avannotate.asd.crop import crop_box
 from avannotate.faces.frames import iter_window_frames
 from avannotate.faces.types import Frame
-from avannotate.ffmpeg import FFmpegError, find_ffmpeg
+from avannotate.ffmpeg import FFmpegError, find_ffmpeg, video_encoder
 from avannotate.matching import Box
 
 #: What the extractor's visual encoder takes.  Larger than ASD's 112: this one
@@ -101,6 +101,27 @@ def iter_tiles(
         raise ValueError(f"more boxes than frames: {len(boxes)} boxes, {index} frames")
 
 
+#: Quality flags per codec, for the ones :func:`video_encoder` can return.
+#: 18 is x264's visually-lossless-ish CRF; mpeg4's scale runs the other way and
+#: lower is better, so 3 is the comparable setting rather than 18.
+_QUALITY_ARGS = {
+    "libx264": ("-preset", "veryfast", "-crf", "18"),
+    "libx265": ("-preset", "veryfast", "-crf", "20"),
+    "mpeg4": ("-qscale:v", "3"),
+}
+
+
+def _quality_args(codec: str) -> tuple[str, ...]:
+    """The quality flags ``codec`` understands, empty if it is not a known one.
+
+    Empty rather than guessed: an unknown encoder is one whose options this
+    module has not been told about, and ffmpeg's defaults are a better answer
+    than another codec's flags.
+    """
+
+    return _QUALITY_ARGS.get(codec, ())
+
+
 def _drain(stream: IO[bytes], sink: list[bytes]) -> None:
     """Consume a pipe in the background so a full buffer cannot deadlock ffmpeg."""
 
@@ -129,6 +150,7 @@ def write_crop_video(
         raise ValueError(f"fps must be positive, got {fps}")
 
     target.parent.mkdir(parents=True, exist_ok=True)
+    codec = video_encoder()
     encoder = subprocess.Popen(
         [
             find_ffmpeg(),
@@ -148,11 +170,13 @@ def write_crop_video(
             "-",
             "-an",
             "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "18",
+            codec,
+            # Quality settings are per-codec, not per-encoder-role: -crf and
+            # -preset are libx264's, and mpeg4 rejects both in favour of
+            # -qscale:v.  Passing x264's flags to mpeg4 is not an error ffmpeg
+            # is obliged to raise, so getting this wrong could quietly encode
+            # at the default quality instead of the one asked for.
+            *_quality_args(codec),
             "-pix_fmt",
             "yuv420p",
             str(target),
