@@ -364,6 +364,38 @@ and on one that can reach nothing at all, a wheelhouse:
     --index is not enough; see setup_server.sh --from-bundle"
 
 # --------------------------------------------------------------------------- #
+# cv2, and which of the two packages provides it
+# --------------------------------------------------------------------------- #
+#
+# Two distributions both install a package called `cv2`: opencv-python, which
+# links against libGL and libgtk, and opencv-python-headless, which does not.
+# This project asks for the headless one -- and insightface, which S1 cannot do
+# without, asks for the other.  So installing the `faces` extra gets both, and
+# whichever was written last is the one `import cv2` finds.
+#
+# On a laptop that is invisible.  On a headless server it is
+# `ImportError: libGL.so.1: cannot open shared object file` the first time S1
+# touches cv2 -- and the fix people reach for, `apt-get install libgl1`, needs
+# root, which a cluster does not give you.
+#
+# So the non-headless one goes, and the headless one is reinstalled rather than
+# merely kept: uninstalling one of two packages that share a directory leaves a
+# mix of both packages' files under one name.
+
+say "cv2"
+if "$PY" -m pip show opencv-python >/dev/null 2>&1; then
+    note "opencv-python is here (insightface asks for it by name), and S1 needs"
+    note "the headless build instead -- removing it and reinstalling headless"
+    "${PIP[@]}" uninstall -y -q opencv-python >/dev/null 2>&1 || true
+    "${PIP[@]}" install -q --force-reinstall --no-deps \
+        --index-url "$PIP_INDEX" opencv-python-headless \
+        || warn "could not reinstall opencv-python-headless; cv2 may be a mix"
+    note "cv2 is now the headless build"
+else
+    note "only the headless build is installed"
+fi
+
+# --------------------------------------------------------------------------- #
 # DiariZen, which is not a package
 # --------------------------------------------------------------------------- #
 
