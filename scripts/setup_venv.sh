@@ -396,6 +396,44 @@ else
 fi
 
 # --------------------------------------------------------------------------- #
+# onnxruntime, which has cv2's problem and one of its own
+# --------------------------------------------------------------------------- #
+#
+# `onnxruntime` and `onnxruntime-gpu` both install a package called
+# `onnxruntime`, and three of this pipeline's dependencies ask for the CPU one
+# by name -- insightface, faster-whisper and modelscope -- against this
+# project's own `onnxruntime-gpu`.  Whichever was written last is the one that
+# gets imported.  The CPU build has no CUDA provider, so insightface and
+# faster-whisper's VAD quietly run on the CPU: no error, no warning that
+# anything is wrong, just a stage that is about ten times slower than the card
+# it is sitting next to.
+#
+# The second half is not obvious from the package name.  `onnxruntime-gpu`
+# does not depend on CUDA or cuDNN -- they are optional extras -- so a bare
+# install offers the CUDA provider only if the machine already has a matching
+# CUDA and cuDNN of its own.  Asking for [cuda,cudnn] pulls them from PyPI
+# instead, which is what makes this work on a cluster with no root: nothing
+# here needs a system package.
+
+# Only where it is wanted.  `asr` pulls onnxruntime too (faster-whisper uses it
+# for its VAD, on a few seconds of audio at a time, which the CPU does
+# perfectly well), and dragging a gigabyte of CUDA libraries in for that would
+# be the same mistake as installing torch for a stage that never calls it.
+if [[ ",$EXTRAS," == *",faces,"* ]] || "$PY" -m pip show onnxruntime-gpu >/dev/null 2>&1; then
+    say "onnxruntime"
+    if "$PY" -m pip show onnxruntime >/dev/null 2>&1; then
+        note "the CPU build is installed (three dependencies ask for it by name);"
+        note "removing it so the GPU one is what gets imported"
+    fi
+    # Both are removed before either is installed: the two packages write into
+    # the same directory, so uninstalling one by name can take the other's files
+    # with it and leave a mixture behind.
+    "${PIP[@]}" uninstall -y -q onnxruntime onnxruntime-gpu >/dev/null 2>&1 || true
+    "${PIP[@]}" install -q --index-url "$PIP_INDEX" "onnxruntime-gpu[cuda,cudnn]" \
+        || warn "could not install onnxruntime-gpu[cuda,cudnn]; S1/S3 will use the CPU"
+fi
+
+# --------------------------------------------------------------------------- #
 # DiariZen, which is not a package
 # --------------------------------------------------------------------------- #
 
