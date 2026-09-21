@@ -430,32 +430,12 @@ fi
 # environment, and the one place a working torch is guaranteed to exist.
 
 say "torch's VGGish cache"
-VGGISH="${TORCH_HOME:-$HOME/.cache/torch}/hub/checkpoints/vggish-10086976.pth"
-LOCO_CHECKPOINT="$ROOT/models/loconet/loconet_AVA.model"
-if [[ -f "$VGGISH" ]]; then
-    note "already seeded: $VGGISH"
-elif [[ ! -f "$LOCO_CHECKPOINT" ]]; then
-    warn "nothing to seed it from: $LOCO_CHECKPOINT is not here."
-    warn "The first S5 will try to fetch 275 MB from a GitHub release, which"
-    warn "is exactly what that checkpoint exists to avoid."
-else
-    "$PY" - "$LOCO_CHECKPOINT" "$VGGISH" <<'PYEOF' \
-        || warn "could not seed it; S5 will try the download instead"
-import os, sys
-import torch
-
-source, target = sys.argv[1], sys.argv[2]
-state = torch.load(source, map_location="cpu", weights_only=True)
-inner = "model.module.model.audioEncoder."
-audio = {k[len(inner):]: v for k, v in state.items() if k.startswith(inner)}
-if not audio:
-    raise SystemExit("no audioEncoder weights under that prefix")
-os.makedirs(os.path.dirname(target), exist_ok=True)
-torch.save(audio, target)
-print(f"   {target}: {os.path.getsize(target) // 1024 // 1024} MB "
-      f"from {len(audio)} of the checkpoint's tensors")
-PYEOF
-fi
+# In its own script rather than inline, so it can also be run on its own --
+# which is what it is for, since the thing it replaces is a snippet people
+# paste, and a pasted snippet resolves its paths against whatever directory
+# they were standing in.  This one resolves against the checkout.
+"$PY" "$ROOT/scripts/seed_vggish.py" \
+    || warn "could not seed the VGGish cache; S5 will try a 275 MB download"
 
 # --------------------------------------------------------------------------- #
 # can this environment see the hardware
