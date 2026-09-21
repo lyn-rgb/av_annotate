@@ -314,22 +314,29 @@ if needs_torch; then
     # and transformers has no trouble with it.  DiariZen's own constraints.txt
     # pins 2.1.1, which is further back than anything else here wants to go.
     #
-    # Override with TORCH_PIN=2.9.* if the vendored pyannote is ever updated.
+    # torchvision comes along because it is pinned to torch *exactly* -- 0.23.0
+    # requires torch==2.8.0 -- so leaving a newer one installed means pip
+    # reports a conflict and, worse, leaves an ABI-mismatched extension module
+    # that crashes on import.  Nothing in the inference path imports it (its
+    # users in the LoCoNet checkout are the data loaders and the in-tree face
+    # detector, none of which the adapter touches), but "nothing imports it
+    # today" is not a reason to leave a broken one lying around.
+    #
+    # Override with TORCH_PIN/TORCHVISION_PIN if the vendored pyannote is ever
+    # updated past the torchaudio rename.
     pin="${TORCH_PIN:-2.8.*}"
+    tv_pin="${TORCHVISION_PIN:-0.23.0}"
     say "PyTorch"
     if [[ -n "$TORCH_INDEX" ]]; then
         note "index: $TORCH_INDEX"
-        note "pinned to $pin (see the comment in this script)"
-        "${PIP[@]}" install --upgrade "torch==$pin" "torchaudio==$pin" \
-            --index-url "$TORCH_INDEX" \
-            || die "installing torch from $TORCH_INDEX failed"
     else
         note "index: $PIP_INDEX"
-        note "pinned to $pin (see the comment in this script)"
-        "${PIP[@]}" install --upgrade "torch==$pin" "torchaudio==$pin" \
-            --index-url "$PIP_INDEX" \
-            || die "installing torch failed"
     fi
+    note "pinned to $pin (see the comment in this script)"
+    "${PIP[@]}" install --upgrade "torch==$pin" "torchaudio==$pin" \
+        "torchvision==$tv_pin" \
+        --index-url "${TORCH_INDEX:-$PIP_INDEX}" \
+        || die "installing torch failed"
 else
     say "PyTorch"
     note "skipped: none of [$EXTRAS] needs it"
