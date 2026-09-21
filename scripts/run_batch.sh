@@ -97,12 +97,30 @@ fi
 # checkpoint, which on a machine with no route to Hugging Face cannot succeed
 # and on one that has a route would quietly fetch a second copy.
 #
-# A symlink, so it costs nothing and shows up in `ls` as what it is.
-if [[ -d "$ROOT/models/clearvoice/AV_MossFormer2_TSE_16K" && ! -e checkpoint_dir/AV_MossFormer2_TSE_16K ]]; then
-    mkdir -p checkpoint_dir
-    ln -s "$ROOT/models/clearvoice/AV_MossFormer2_TSE_16K" checkpoint_dir/AV_MossFormer2_TSE_16K
-    printf '   S7 checkpoint linked into %s/checkpoint_dir/\n' "$(pwd)"
-fi
+# Two names, because clearvoice has used both.  The build this was run against
+# wants `checkpoints/` -- its own error says so, verbatim:
+#     FileNotFoundError: 'checkpoints/AV_MossFormer2_TSE_16K/last_best_checkpoint.pt'
+# -- while the 0.1.2 source on PyPI says `checkpoint_dir/`.  A link under each
+# name is cheaper than working out which, and harmless either way.
+#
+# The `-L` test is the part that was learned the hard way: `ln -sfn` aimed at a
+# path that is already a directory -- which is what an interrupted download
+# leaves behind -- puts the link *inside* it rather than replacing it, and the
+# file it was meant to provide is then still missing.  A real directory there is
+# stale by definition, so it is moved aside for inspection rather than deleted.
+for name in checkpoints checkpoint_dir; do
+    [[ -d "$ROOT/models/clearvoice/AV_MossFormer2_TSE_16K" ]] || continue
+    link="$name/AV_MossFormer2_TSE_16K"
+    if [[ -d "$link" && ! -L "$link" ]]; then
+        mv "$link" "$link.partial"
+        printf '   moved a stale %s aside (an interrupted download, most likely)\n' "$link"
+    fi
+    if [[ ! -e "$link" ]]; then
+        mkdir -p "$name"
+        ln -s "$ROOT/models/clearvoice/AV_MossFormer2_TSE_16K" "$link"
+        printf '   S7 checkpoint linked at %s/%s\n' "$(pwd)" "$link"
+    fi
+done
 
 mkdir -p "$OUTPUT"
 LOG="$(cd "$OUTPUT" && pwd)/batch.log"
