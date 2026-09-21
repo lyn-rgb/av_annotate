@@ -53,6 +53,37 @@ from typing import Any, Protocol
 
 from avannotate.audio.types import DiarizationResult, SpeakerTurn
 
+
+def _allow_torch_version_stamp() -> None:
+    """Let torch load pyannote's checkpoints again.
+
+    PyTorch 2.6 changed ``torch.load``'s default from ``weights_only=False`` to
+    ``True``, which refuses to unpickle anything not on an allowlist.  The
+    pyannote checkpoints DiariZen loads -- the wespeaker embedding model among
+    them -- were written before that and carry a ``TorchVersion`` stamp, so the
+    load now fails with ``UnpicklingError: Unsupported global:
+    torch.torch_version.TorchVersion``.
+
+    ``add_safe_globals`` is what the error itself suggests, and ``TorchVersion``
+    is a version string with comparison operators on it -- the smallest possible
+    thing to allow, and much better than the alternative the error also offers,
+    which is turning ``weights_only`` off for every checkpoint this process
+    ever loads.
+
+    Process-wide and idempotent, and called here rather than at import time so
+    that importing this module does not quietly change torch's behaviour for
+    everything else in the interpreter.
+    """
+    try:
+        import torch
+    except ModuleNotFoundError:  # pragma: no cover - torch is required for S4
+        return
+    serialization = getattr(torch, "serialization", None)
+    add = getattr(serialization, "add_safe_globals", None)
+    version = getattr(getattr(torch, "torch_version", None), "TorchVersion", None)
+    if add is not None and version is not None:
+        add([version])
+
 #: v2 handles up to four overlapping speakers; v1 merges extra speakers into its
 #: arrival-order slots.  The default is v2 because simultaneous speech is the
 #: case this pipeline is built for.
@@ -120,6 +151,7 @@ class DiariZenDiarizer:
         #   and on a cold one it fails, which is the worst way round.
         # * **No device.**  It is chosen inside from ``torch.cuda.is_available()``
         #   and corrected afterwards in ``_place_on``.
+        _allow_torch_version_stamp()
         try:
             self._pipeline = DiariZenPipeline.from_pretrained(model)
         except TypeError as error:
