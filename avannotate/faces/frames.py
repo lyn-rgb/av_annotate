@@ -27,6 +27,26 @@ from avannotate.ffmpeg import FFmpegError, find_ffmpeg
 #: Channels in the ``rgb24`` pixel format every reader here requests.
 _CHANNELS = 3
 
+# About the ``scale`` filter, which every decoder below passes.
+#
+# Each of these functions parses ffmpeg's raw output as ``width * height *
+# channels`` bytes per frame, so ffmpeg has to be told to *produce* that size.
+# For a long time none of them said so, and the failure was silent: ffmpeg emits
+# the video at its native size, the caller reads the first ``width * height * 3``
+# bytes of each frame as if they were the whole thing, and what comes out is the
+# top strip of the picture wrapped into the requested width.
+#
+# It stayed hidden because only one caller asks for a size that is not the
+# native one.  Face detection and the crop decoder pass the dimensions the
+# probe reported, so for them the strip is the whole frame and the missing
+# filter is invisible.  Captioning is the caller that downscales -- and it spent
+# a run describing a wooden wall as "a close-up of a woven basket, no people
+# visible", with two faces tracked in the same frames and nothing raising.
+#
+# So the scale is passed unconditionally, including when it is a no-op: a
+# decoder whose correctness depends on its caller's arithmetic is a decoder that
+# will be wrong again.
+
 
 @dataclass(frozen=True)
 class FrameSampling:
@@ -191,6 +211,8 @@ def iter_window_frames(
             f"{max(0.0, start_time):.4f}",
             "-i",
             str(source),
+            "-vf",
+            f"scale={width}:{height}",
             "-frames:v",
             str(count),
             "-an",
@@ -284,7 +306,7 @@ def iter_sampled_frames(
             # One output frame per input interval of this length, so the count
             # asked for is the count that comes out of a span of this duration.
             "-vf",
-            f"fps={count / duration:.6f}",
+            f"fps={count / duration:.6f},scale={width}:{height}",
             "-frames:v",
             str(count),
             "-an",
@@ -346,6 +368,8 @@ def read_frame(source: Path, *, width: int, height: int, time: float) -> Frame |
             f"{max(0.0, time):.4f}",
             "-i",
             str(source),
+            "-vf",
+            f"scale={width}:{height}",
             "-frames:v",
             "1",
             "-an",

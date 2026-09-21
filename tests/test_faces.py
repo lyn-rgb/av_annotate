@@ -18,7 +18,13 @@ from avannotate.faces.detect import (
     YuNetDetector,
     build_detector,
 )
-from avannotate.faces.frames import FrameSampling, iter_frames, read_frame
+from avannotate.faces.frames import (
+    FrameSampling,
+    iter_frames,
+    iter_sampled_frames,
+    iter_window_frames,
+    read_frame,
+)
 from avannotate.faces.types import Detection, FrameDetections
 from avannotate.ffmpeg import FFmpegError, probe_media
 
@@ -175,6 +181,60 @@ def test_read_frame_returns_an_image_and_none_past_the_end(single_shot_video: Pa
     assert frame.shape == (info.height, info.width, 3)
 
     assert read_frame(single_shot_video, width=info.width, height=info.height, time=999.0) is None
+
+
+@pytest.mark.parametrize("decoder", ["read", "sampled", "window"])
+def test_a_scaled_decode_is_not_the_top_strip_of_the_frame(
+    single_shot_video: Path, decoder: str
+) -> None:
+    """The regression: a smaller frame used to come back as the frame's top strip.
+
+    None of these three ever told ffmpeg to scale, so it emitted the video at
+    its native size while the caller read ``width * height * 3`` bytes per frame
+    and reshaped them.  For a smaller request that is the top strip of the
+    picture wrapped into the requested width -- and it raised nothing.
+
+    It survived every test in this file because they all pass the native
+    dimensions, where the strip *is* the frame.  Captioning is the one caller
+    that asks for less, and a run of it described a wooden wall as "a close-up
+    of a woven basket, no people visible" with two faces tracked in the very
+    same frames.
+
+    The assertion is exact rather than a tolerance: with the scale missing, the
+    output is those bytes verbatim, so comparing against them catches the bug
+    and needs no threshold to tune.
+    """
+
+    def decode(width: int, height: int) -> np.ndarray:
+        if decoder == "read":
+            frame = read_frame(single_shot_video, width=width, height=height, time=1.0)
+            assert frame is not None
+            return np.asarray(frame)
+        if decoder == "sampled":
+            frames = list(
+                iter_sampled_frames(
+                    single_shot_video,
+                    width=width,
+                    height=height,
+                    start_time=1.0,
+                    duration=1.0,
+                    count=1,
+                )
+            )
+            return np.asarray(frames[0])
+        frames = list(
+            iter_window_frames(
+                single_shot_video, width=width, height=height, start_time=1.0, count=1
+            )
+        )
+        return np.asarray(frames[0])
+
+    full = decode(320, 240)
+    small = decode(160, 120)
+
+    assert small.shape == (120, 160, 3)
+    strip = full.reshape(-1)[: 160 * 120 * 3].reshape(120, 160, 3)
+    assert not np.array_equal(small, strip)
 
 
 # --------------------------------------------------------------------------- #
