@@ -38,14 +38,29 @@ import argparse
 import os
 from pathlib import Path
 
-#: Repos the stages load by repo id, and which stage wants each.
+#: Repos the stages load by repo id: which stage wants each, a file that must be
+#: there, and the floor the whole snapshot has to clear.
+#:
+#: The floor is the part that matters, and it was learned from a real miss.  A
+#: probe file alone says nothing about whether the *weights* arrived: Qwen3-VL's
+#: config.json is 1.5 KB, so a snapshot holding nine small files and none of the
+#: four 4 GB shards passed as "ok" at 11 MB.  The stage then spent twenty
+#: minutes fetching what the check had just called present.
+#:
+#: The floors are deliberately far below the real sizes -- they are there to
+#: catch "the weights are absent", not to police a few megabytes of difference
+#: between revisions.
 CACHED = (
-    ("Qwen/Qwen3-VL-8B-Instruct", "S10 captioning", "config.json"),
-    ("Systran/faster-whisper-large-v3", "S8 ASR", "model.bin"),
-    ("laion/voice-tagging-whisper", "S9 delivery", "config.json"),
-    ("openai/whisper-small", "S9 delivery processor", "config.json"),
-    ("pyannote/wespeaker-voxceleb-resnet34-LM", "S4 embedding", "configuration.json"),
-    ("BUT-FIT/diarizen-wavlm-large-s80-md-v2", "S4 diarization", "config.toml"),
+    ("Qwen/Qwen3-VL-8B-Instruct", "S10 captioning", "config.json", 10_000_000_000),
+    ("Systran/faster-whisper-large-v3", "S8 ASR", "model.bin", 2_000_000_000),
+    ("laion/voice-tagging-whisper", "S9 delivery", "model.safetensors", 500_000_000),
+    ("openai/whisper-small", "S9 delivery processor", "config.json", 500_000_000),
+    # `pytorch_model.bin`, not `configuration.json`: that name is in the copy
+    # ModelScope serves, and the real Hub repo does not have it -- so probing for
+    # it reported a download as broken when it was complete and S4 was running
+    # off it.
+    ("pyannote/wespeaker-voxceleb-resnet34-LM", "S4 embedding", "pytorch_model.bin", 10_000_000),
+    ("BUT-FIT/diarizen-wavlm-large-s80-md-v2", "S4 diarization", "pytorch_model.bin", 100_000_000),
 )
 
 #: Paths inside the checkout, for the weights and code that are not repo ids.
@@ -92,7 +107,7 @@ def check_cache(hub: Path) -> list[str]:
         return [repo for repo, _, _ in CACHED]
 
     missing: list[str] = []
-    for repo, stage, probe in CACHED:
+    for repo, stage, probe, floor in CACHED:
         snapshot = snapshot_dir(hub, repo)
         if snapshot is None:
             print(f"    MISS  {repo:<44} {stage}")
@@ -101,7 +116,14 @@ def check_cache(hub: Path) -> list[str]:
         files = [f for f in snapshot.rglob("*") if f.is_file()]
         size = sum(f.stat().st_size for f in files)
         if not (snapshot / probe).is_file():
-            print(f"    PART  {repo:<44} {stage}: no {probe}")
+            print(f"    PART  {repo:<44} {stage}: no {probe} ({human(size)})")
+            missing.append(repo)
+            continue
+        if size < floor:
+            print(
+                f"    PART  {repo:<44} {stage}: only {human(size)}, "
+                f"expected at least {human(floor)}"
+            )
             missing.append(repo)
             continue
         print(f"    ok    {repo:<44} {stage}  ({len(files)} files, {human(size)})")
