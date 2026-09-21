@@ -198,9 +198,21 @@ if wants s4-diarize; then
 
     if [[ -d "$DEST/pyannote-audio" ]]; then
         note "installing the vendored pyannote-audio"
+        # Its setup.py does `from pkg_resources import ...`, and pkg_resources
+        # was removed from setuptools in 81.  So this build needs a setuptools
+        # that still has it AND needs to be able to see it, which rules out
+        # build isolation -- the isolated build gets its own newest setuptools
+        # and a PIP_CONSTRAINT does not reach into it.  Hence the pin plus
+        # --no-build-isolation.
+        #
+        # -c ../constraints.txt is dropped here rather than kept: it pins torch
+        # to 2.1.1, and pip resolving pyannote's own torch dependency would
+        # honour that and downgrade a working torch to satisfy it.  See
+        # docs/server-setup.md.
+        pip_install "setuptools<81" wheel \
+            || warn "could not pin setuptools; the vendored build may fail"
         ( cd "$DEST/pyannote-audio" \
-          && pip_install -e .[dev,testing] \
-                 -c ../constraints.txt ) \
+          && pip_install -e .[dev,testing] --no-build-isolation ) \
             || warn "the vendored pyannote-audio did not install; DiariZen may still import"
     else
         warn "no pyannote-audio directory found; DiariZen's layout may have changed"

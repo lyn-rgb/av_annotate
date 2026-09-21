@@ -361,7 +361,23 @@ elif ! "$PY" -c "import diarizen" >/dev/null 2>&1; then
         && "${PIP[@]}" install -e . ) \
         || warn "DiariZen's own requirements did not install; S4 may still import"
     if [[ -d "$DIARIZEN/pyannote-audio" ]]; then
-        ( cd "$DIARIZEN/pyannote-audio" && "${PIP[@]}" install -e . ) \
+        # That setup.py opens with `from pkg_resources import ...`, and
+        # pkg_resources was removed from setuptools in 81 -- so the build needs
+        # a setuptools that still has it, *and* needs to be able to see it.
+        #
+        # Build isolation is what makes that awkward: it gives the build its own
+        # freshly-installed setuptools, and a PIP_CONSTRAINT does not reach into
+        # it (tried; the isolated build gets 84 and dies on the import either
+        # way).  So isolation comes off for this one install, which means the
+        # venv's setuptools is what runs -- hence the pin.
+        #
+        # setuptools<81 is still well above the >=68 this project and >=38.3
+        # that setup.py checks for, so nothing else minds.
+        note "pinning setuptools for it (its setup.py predates the removal)"
+        "${PIP[@]}" install --quiet "setuptools<81" wheel --index-url "$PIP_INDEX" \
+            || warn "could not pin setuptools; the vendored build may fail"
+        ( cd "$DIARIZEN/pyannote-audio" \
+          && "${PIP[@]}" install -e . --no-build-isolation --index-url "$PIP_INDEX" ) \
             || warn "the vendored pyannote-audio did not install"
     fi
     "$PY" -c "from diarizen.pipelines.inference import DiariZenPipeline" >/dev/null 2>&1 \
