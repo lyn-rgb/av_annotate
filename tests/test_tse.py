@@ -818,5 +818,64 @@ def test_writing_nothing_names_the_right_suspect(tmp_path: Path) -> None:
     source = tmp_path / "F001_0000.mp4"
     source.write_bytes(b"a crop")
 
-    with pytest.raises(TseError, match="wrote no est_"):
+    with pytest.raises(TseError, match="wrote nothing at all"):
         _extractor(_NestingModel(produce=False)).extract(source, tmp_path / "scratch")
+
+
+class _NoFaceModel:
+    """What clearvoice leaves behind when its detector finds nothing.
+
+    Intermediates only: the re-encoded crop, and no ``py_faceTracks`` -- that
+    directory is written per tracked face, which is how the adapter tells this
+    apart from a model that tracked a face and then produced nothing.
+    """
+
+    def __init__(self) -> None:
+        self.dirs: list[Path] = []
+
+    def __call__(self, input_path: str, online_write: bool, output_path: str) -> None:
+        out = Path(output_path)
+        self.dirs.append(out)
+        stage = out / "AV_MossFormer2_TSE_16K" / Path(input_path).stem / "py_video"
+        stage.mkdir(parents=True, exist_ok=True)
+        (stage / "video_orig.mp4").write_bytes(b"the crop, re-encoded")
+
+
+def test_no_face_in_the_crop_is_not_an_error(tmp_path: Path) -> None:
+    """The extractor ran and found nothing to separate.
+
+    That is a fact about the crop rather than a fault: a face track can be a
+    false positive -- this corpus has one deliberately -- and reporting it as an
+    error failed the whole video and took that identity's other segments with it.
+    """
+
+    source = tmp_path / "F002_0000.mp4"
+    source.write_bytes(b"a crop of something that is not a face")
+
+    assert _extractor(_NoFaceModel()).extract(source, tmp_path / "scratch") is None
+
+
+def test_a_tracked_face_with_no_output_is_still_an_error(tmp_path: Path) -> None:
+    """Guards the guard, in the direction that would hide a real breakage.
+
+    "It saw a face and produced nothing" is not "it saw no face".  Swallowing
+    the first as the second would turn a broken extractor into a corpus that
+    quietly has no audio in it.
+    """
+
+    class _TrackedButSilent:
+        def __call__(self, input_path: str, online_write: bool, output_path: str) -> None:
+            stage = (
+                Path(output_path)
+                / "AV_MossFormer2_TSE_16K"
+                / Path(input_path).stem
+                / "py_faceTracks"
+            )
+            stage.mkdir(parents=True, exist_ok=True)
+            (stage / "00000.avi").write_bytes(b"a face it did track")
+
+    source = tmp_path / "F001_0000.mp4"
+    source.write_bytes(b"a crop")
+
+    with pytest.raises(TseError, match="tracked a face"):
+        _extractor(_TrackedButSilent()).extract(source, tmp_path / "scratch")

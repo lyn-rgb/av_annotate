@@ -55,6 +55,13 @@ from typing import Any, Protocol
 #: The model name ClearerVoice registers this checkpoint under.
 MODEL_NAME = "AV_MossFormer2_TSE_16K"
 
+#: The directory clearvoice writes under its output for each face it tracked.
+#:
+#: Its presence is how :meth:`ClearerVoiceExtractor.extract` tells "it looked
+#: and found no face" from "it found a face and produced nothing" -- two
+#: situations that look identical from the outside and need opposite answers.
+_FACE_TRACK_DIR = "py_faceTracks"
+
 #: Video containers its loader accepts.
 SUPPORTED_SUFFIXES = frozenset({".avi", ".mp4", ".mov", ".webm"})
 
@@ -68,8 +75,13 @@ class TargetSpeakerExtractor(Protocol):
 
     name: str
 
-    def extract(self, video: Path, output_dir: Path) -> Path:
-        """Return the WAV holding the one voice present in ``video``."""
+    def extract(self, video: Path, output_dir: Path) -> Path | None:
+        """The WAV holding the one voice in ``video``, or ``None`` if there is none.
+
+        ``None`` means the extractor ran and found no face to condition on --
+        a fact about the crop rather than a failure, and not something the
+        caller should treat as one.
+        """
         ...
 
 
@@ -130,7 +142,7 @@ class ClearerVoiceExtractor:
             task="target_speaker_extraction", model_names=[model_name]
         )
 
-    def extract(self, video: Path, output_dir: Path) -> Path:
+    def extract(self, video: Path, output_dir: Path) -> Path | None:
         source = Path(video)
         if not source.is_file():
             raise TseError(f"no such video: {source}")
@@ -166,19 +178,51 @@ class ClearerVoiceExtractor:
         # file -- and predicting them would be predicting somebody else's
         # layout.
         produced = sorted(call_dir.rglob("est_*.wav"))
-        if not produced:
-            wrote = sorted(
-                str(path.relative_to(call_dir))
-                for path in call_dir.rglob("*")
-                if path.is_file()
-            )
+        if produced:
+            return produced[0]
+
+        wrote = sorted(
+            str(path.relative_to(call_dir))
+            for path in call_dir.rglob("*")
+            if path.is_file()
+        )
+
+        # Nothing was extracted, and three different things arrive here.
+        # ``py_faceTracks`` is what separates them: clearvoice writes a
+        # directory of that name for each face it tracked.
+        #
+        # Nothing at all means it did not run the way this adapter expects, and
+        # that is a fault -- a run that leaves no files behind is not a run that
+        # found nothing.
+        if not wrote:
             raise TseError(
-                f"the extractor wrote no est_*.wav under {call_dir}. It wrote "
-                + (", ".join(wrote[:12]) if wrote else "nothing at all")
-                + ". ClearerVoiceExtractor.extract predicts this name from a "
-                "real run; check it against the installed version."
+                f"the extractor wrote nothing at all under {call_dir}. "
+                "ClearerVoiceExtractor.extract predicts this from a real run; "
+                "check it against the installed version."
             )
-        return produced[0]
+
+        # A ``py_faceTracks`` directory means it found and tracked a face, so
+        # the absence of an ``est_*.wav`` beside it is a fault: it had something
+        # to separate and produced nothing.
+        if any(_FACE_TRACK_DIR in Path(name).parts for name in wrote):
+            raise TseError(
+                f"the extractor tracked a face but wrote no est_*.wav under "
+                f"{call_dir}. It wrote "
+                + ", ".join(wrote[:12])
+                + ". ClearerVoiceExtractor.extract predicts this name from a real "
+                "run; check it against the installed version."
+            )
+
+        # Neither: it ran, it left its intermediates, and it tracked no face.
+        #
+        # **That is a fact about the crop, not a fault.**  The crop is cut from a
+        # tracked face, and a track can be a false positive -- this corpus has
+        # one on purpose, which is what
+        # ``test_a_background_false_positive_is_kept_and_is_distinguishable``
+        # exists for.  There is nothing to separate, so there is nothing wrong:
+        # the caller skips the segment.  Reported as an error, it failed the
+        # whole video and took the identity's other segments down with it.
+        return None
 
     def _call(self, source: Path, output_dir: Path) -> Any:
         """The one call whose argument names are unverified.

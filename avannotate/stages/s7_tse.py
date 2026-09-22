@@ -87,6 +87,11 @@ SCRATCH_DIR = "scratch"
 #: is the one extraction failure that can be seen without a reference signal.
 SILENT_RMS = 1e-4
 
+#: Why a segment was skipped rather than extracted: the crop it is conditioned
+#: on holds no face the extractor can find.  A track can be a false positive,
+#: and a segment that cannot yield speech is not a stage failure.
+NO_FACE = "no face in the crop"
+
 
 @dataclass(frozen=True)
 class S7Config:
@@ -169,8 +174,8 @@ def extract_segment(
     sample_rate: int,
     crops_dir: Path,
     scratch_dir: Path,
-) -> dict[str, object]:
-    """Extract one segment and write it to ``audio/<identity>/<name>.wav``."""
+) -> dict[str, object] | None:
+    """Extract one segment, or ``None`` if the extractor found no face in it."""
 
     start_frame, end_frame = context_window(
         segment, fps=fps, frame_count=frame_count, context_seconds=config.context_seconds
@@ -190,6 +195,15 @@ def extract_segment(
     )
 
     raw_path = extractor.extract(crop_path, scratch_dir)
+    if raw_path is None:
+        # The extractor ran and found no face in the crop.  A segment that
+        # cannot yield speech is skipped rather than failed; see the note in
+        # ``ClearerVoiceExtractor.extract``.  The crop stays on disk for whoever
+        # asks why, unless the config says not to keep crops.
+        if not config.keep_crops:
+            crop_path.unlink(missing_ok=True)
+        return None
+
     raw_rate, _ = read_info(raw_path)
     raw_samples = read_window(
         raw_path, start_seconds=0.0, duration_seconds=1e9
@@ -279,22 +293,24 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
             continue
 
         for segment in plan[identity]:
-            segments.append(
-                extract_segment(
-                    context,
-                    extractor,
-                    members,
-                    segment,
-                    config,
-                    width=timeline.width,
-                    height=timeline.height,
-                    fps=timeline.fps,
-                    frame_count=timeline.frame_count,
-                    sample_rate=timeline.sample_rate,
-                    crops_dir=crops_dir,
-                    scratch_dir=scratch_dir,
-                )
+            extracted = extract_segment(
+                context,
+                extractor,
+                members,
+                segment,
+                config,
+                width=timeline.width,
+                height=timeline.height,
+                fps=timeline.fps,
+                frame_count=timeline.frame_count,
+                sample_rate=timeline.sample_rate,
+                crops_dir=crops_dir,
+                scratch_dir=scratch_dir,
             )
+            if extracted is None:
+                skipped.append({**segment.to_dict(), "reason": NO_FACE})
+                continue
+            segments.append(extracted)
 
     segments_path = write_json(
         context.output(STAGE, SEGMENTS_NAME),
