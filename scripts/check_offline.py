@@ -75,6 +75,13 @@ LOCAL = (
     ("models/DiariZen/diarizen/pipelines/inference.py", "S4 checkout"),
     ("models/clearvoice/AV_MossFormer2_TSE_16K/last_best_checkpoint.pt", "S7 checkpoint"),
     ("models/panns/Cnn14_mAP=0.431.pth", "S9 events"),
+    # Under TORCH_HOME, which run_batch.sh points at the checkout.  Listed here
+    # because its absence is not a slow start: torchvggish asks torch.hub for
+    # it, and the GitHub release it would fetch from is unreachable on a server
+    # like this one.  It is also the one entry that is cheap to put back --
+    # `scripts/seed_vggish.py` copies it out of the LoCoNet checkpoint in
+    # seconds -- which is why the label says so.
+    ("models/torch/hub/checkpoints/vggish-10086976.pth", "S5 audio frontend (seed_vggish.py)"),
 )
 
 
