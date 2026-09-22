@@ -75,7 +75,7 @@ STAGE = "s11-compose"
 #: message was useless.  Bumped because the report is S11's artifact and
 #: nothing else about the stage changed: without this the stage would skip
 #: and reprint the old one.
-VERSION = "s11-v2"
+VERSION = "s11-v3"
 
 SCRIPT_NAME = "annotation.txt"
 ANNOTATION_NAME = "annotation.json"
@@ -149,7 +149,9 @@ def build_annotation(
             width=timeline.width,
             height=timeline.height,
         ),
-        utterances=utterances(segments, transcripts, tags),
+        utterances=utterances(
+            segments, transcripts, tags, limit=timeline.duration
+        ),
         shots=shots(s0_preprocess.load_shots(context), shots_data),
         face_tracks=face_tracks(identity_tracks, tracklets, speech),
         global_caption=global_caption,

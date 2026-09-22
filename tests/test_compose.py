@@ -607,3 +607,38 @@ def test_the_turn_total_is_a_union_not_a_sum() -> None:
 
     assert s11_compose._vad_seconds(overlapping) == pytest.approx(3.0)
     assert s11_compose._vad_seconds([]) is None
+
+
+def test_an_utterance_is_clamped_to_the_video() -> None:
+    """A segment's times are rounded to four decimals on their way to disk, and
+    a value rounded *up* lands just past an unrounded duration.
+
+    On the corpus's second video that was 37 microseconds: a real overshoot,
+    small enough that the gate's old two-decimal message could not show it, and
+    large enough that the gate was right to refuse it.  The video does not have
+    those microseconds, so the span does not either.
+    """
+
+    built = utterances(
+        [_segment(start=6.383, end=8.7170004)],
+        {"F001_0000": _transcript()},
+        {},
+        limit=8.717,
+    )
+
+    assert len(built) == 1
+    assert built[0].end == 8.717
+    assert built[0].start == 6.383
+
+
+def test_a_span_inside_the_video_is_left_exactly_where_it_is() -> None:
+    """Guards the guard: a bound, not a nudge."""
+
+    built = utterances(
+        [_segment(start=0.5, end=1.5)],
+        {"F001_0000": _transcript()},
+        {},
+        limit=10.0,
+    )
+
+    assert (built[0].start, built[0].end) == (0.5, 1.5)

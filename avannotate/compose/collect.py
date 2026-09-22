@@ -107,6 +107,8 @@ def utterances(
     segments: Sequence[SpeechSegment],
     transcripts: Mapping[str, Mapping[str, object]],
     tags: Mapping[str, str],
+    *,
+    limit: float | None = None,
 ) -> tuple[Utterance, ...]:
     """One utterance per segment that has words in it.
 
@@ -117,6 +119,14 @@ def utterances(
 
     Ordered by start, then by the identifiers, so two runs over the same video
     produce byte-identical files.
+
+    ``limit`` is the video's duration, and it is clamped to here rather than
+    trusted upstream.  The segment's times were *rounded* on their way to disk
+    -- ``ExtractionSegment.to_dict`` keeps four decimals, as every ``to_dict`` in
+    this package does -- and a value rounded up lands a few hundredths of a
+    millisecond past an unrounded duration.  That is small and it is still a
+    span the video does not have: the gate compares the two and is right to
+    complain, and the alternative to clamping is a report nobody can act on.
     """
 
     built: list[Utterance] = []
@@ -142,11 +152,19 @@ def utterances(
             for item in _objects(record.get("words"))
         )
         confidence = record.get("confidence")
+        start = segment.start
+        end = segment.end
+        if limit is not None:
+            # ``Timeline.duration`` is documented as the number every later stage
+            # clamps to.  This is a later stage.
+            start = max(0.0, min(start, limit))
+            end = max(start, min(end, limit))
+
         built.append(
             Utterance(
                 face_id=segment.identity,
-                start=segment.start,
-                end=segment.end,
+                start=start,
+                end=end,
                 text=text,
                 tag=tags.get(segment.name),
                 audio_path=segment.audio,
