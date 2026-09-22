@@ -63,6 +63,12 @@ say "python     $version"
 # --------------------------------------------------------------------------- #
 
 export TORCH_HOME="${TORCH_HOME:-$ROOT/models/torch}"
+# The other two, at the same paths run_batch.sh uses.  Set here as well because
+# the cache check below reads them: a check that looks in ~/.cache/huggingface
+# while the run looks in the checkout is a check that passes and a run that
+# fails.
+export HF_HOME="${HF_HOME:-$ROOT/models/hf}"
+export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-$ROOT/models/modelscope}"
 VGGISH="$TORCH_HOME/hub/checkpoints/vggish-10086976.pth"
 if [[ -f "$VGGISH" ]]; then
     say "vggish     seeded, $(( $(wc -c < "$VGGISH") / 1024 / 1024 )) MB"
@@ -87,6 +93,27 @@ fi
 
 "$PYTHON" "$ROOT/scripts/fetch_s3fd.py" \
     || warn "S3FD weights are missing and could not be fetched -- S7 will fail on them"
+
+# --------------------------------------------------------------------------- #
+# are the caches what the stages will actually find
+# --------------------------------------------------------------------------- #
+#
+# ``doctor`` answers "are the packages installed" and this answers "are the
+# weights where the run will look for them", which is a different question and
+# the one that has actually bitten.  huggingface_hub rewrites ``refs/main``
+# whenever it resolves a revision from the network, so one run that reaches the
+# mirror and then fails part way through a large download can leave the ref
+# pointing at a snapshot that holds the configs and not the weights -- after
+# which every later run fails looking for weights that are on disk under a
+# different revision.
+#
+# A warning rather than a stop: it reports on every model the pipeline knows,
+# not on the stages this invocation will run, and blocking a stages-limited run
+# on an unrelated checkpoint would be the wrong trade.  The warning names the
+# consequence so that it is not the silent failure it used to be.
+
+"$PYTHON" "$ROOT/scripts/check_offline.py" \
+    || warn "some weights are missing or unreachable -- the stages that need them will fail"
 
 # --------------------------------------------------------------------------- #
 # can this machine run the stages at all
