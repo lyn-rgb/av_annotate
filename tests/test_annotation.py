@@ -68,12 +68,12 @@ def test_renders_the_specified_example_verbatim() -> None:
         "\n"
         "[SHOT 1 0.0s-12.4s]\n"
         "A bright living room with a sofa and a coffee table.\n"
-        "<F001> whispering: <S>I was late for work today</S>\n"
-        "<F002> surprised: <S>What's going on?</S>\n"
+        "<F001> whispering: <S>I was late for work today<E>\n"
+        "<F002> surprised: <S>What's going on?<E>\n"
         "\n"
         "[SHOT 2 12.4s-31.0s]\n"
         "The camera moves closer to the window.\n"
-        "<F001> <S>I forgot my phone</S>\n"
+        "<F001> <S>I forgot my phone<E>\n"
     )
     assert render_script(_example()) == expected
 
@@ -113,10 +113,10 @@ def test_utterance_lands_in_the_shot_containing_its_start() -> None:
 @pytest.mark.parametrize(
     ("tag", "expected"),
     [
-        ("whispering", "<F001> whispering: <S>hi</S>"),
-        (None, "<F001> <S>hi</S>"),
-        ("WHISPERING", "<F001> whispering: <S>hi</S>"),
-        ("  shouting  ", "<F001> shouting: <S>hi</S>"),
+        ("whispering", "<F001> whispering: <S>hi<E>"),
+        (None, "<F001> <S>hi<E>"),
+        ("WHISPERING", "<F001> whispering: <S>hi<E>"),
+        ("  shouting  ", "<F001> shouting: <S>hi<E>"),
     ],
 )
 def test_tag_is_optional_and_normalized(tag: str | None, expected: str) -> None:
@@ -167,7 +167,7 @@ def test_offscreen_speaker_uses_f000_and_round_trips() -> None:
                               tag="whispering"),),
     )
     script = render_script(annotation)
-    assert "<F000> whispering: <S>Once, in this city</S>" in script
+    assert "<F000> whispering: <S>Once, in this city<E>" in script
     parsed = parse_script(script)
     assert parsed.utterances[0].face_id == "F000"
     assert parsed.utterances[0].is_offscreen
@@ -220,7 +220,7 @@ def test_multi_line_caption_is_joined_not_lost() -> None:
     script = (
         "[GLOBAL]\nA wide shot of a room.\n\n"
         "[SHOT 1 0.0s-4.0s]\nA sofa.\nNear a window.\n"
-        "<F001> <S>hello</S>\n"
+        "<F001> <S>hello<E>\n"
     )
     parsed = parse_script(script)
     assert parsed.shots[0].caption == "A sofa. Near a window."
@@ -286,3 +286,48 @@ def test_dict_round_trip() -> None:
 def test_dict_rejects_wrong_schema_version() -> None:
     with pytest.raises(AnnotationFormatError):
         annotation_from_dict({"schema_version": "av-annotation-v0"})
+
+
+def test_the_old_closing_marker_still_parses() -> None:
+    """``<E>`` is what this writes; ``</S>`` is what it used to write.
+
+    And what an annotation that has been through somebody's editor may still
+    carry.  The downstream converter accepts both for exactly that reason -- in
+    its own words, "because the two ends are written by hand on the data side
+    and drift between files" -- and an annotation that stops parsing is a file
+    nobody can act on.
+    """
+
+    parsed = parse_script(
+        "[GLOBAL]\nA room.\n\n[SHOT 1 0.0s-1.0s]\nA room.\n<F001> sad: <S>hello</S>\n"
+    )
+
+    assert [item.text for item in parsed.utterances] == ["hello"]
+    assert parsed.utterances[0].tag == "sad"
+
+
+def test_what_it_writes_is_the_marker_the_manifests_use() -> None:
+    """Not a style choice -- ``<E>`` is what the training data uses.
+
+    ``SyncEdit/scripts/convert_spoken_words_format.py`` rewrites ``<S>...<E>``
+    into LTX-2's quoted prose and opens its pattern with ``<S>...<E>``.  Writing
+    ``</S>`` is still tolerated there, which is exactly why this went unnoticed:
+    the two are interchangeable to that script and not to the training data.
+    """
+
+    script = (
+        "[GLOBAL]\nA room.\n\n[SHOT 1 0.0s-1.0s]\nA room.\n"
+        "<F001> sad: <S>hello<E>\n"
+    )
+
+    parsed = parse_script(script)
+    assert [item.text for item in parsed.utterances] == ["hello"]
+
+    # Written, not merely accepted: rendering has to emit it too.
+    assert "<S>hello<E>" in render_script(
+        Annotation(
+            video=VIDEO,
+            global_caption="A room.",
+            utterances=parsed.utterances,
+        )
+    )

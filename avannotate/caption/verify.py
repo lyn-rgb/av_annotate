@@ -2,7 +2,7 @@
 
 A caption is the one deliverable a model writes in free text, and the one place
 a face id appears outside the utterance grammar.  The format's parser looks for
-``<F001>`` only when it is followed by ``<S>...</S>``, so a name in a caption is
+``<F001>`` only when it is followed by ``<S>...<E>``, so a name in a caption is
 invisible to it -- which is convenient for parsing and dangerous for truth: a
 caption naming the wrong person is not caught by anything downstream.
 

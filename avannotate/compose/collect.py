@@ -114,7 +114,7 @@ def utterances(
 
     A segment whose transcript came back empty is dropped rather than emitted
     with empty text.  It has no audio worth hearing and no words to render, and
-    a line like ``<F001> <S></S>`` in the script is a promise of speech that the
+    a line like ``<F001> <S><E>`` in the script is a promise of speech that the
     pipeline cannot keep -- better counted in the report than written down.
 
     Ordered by start, then by the identifiers, so two runs over the same video

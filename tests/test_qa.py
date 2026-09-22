@@ -210,7 +210,7 @@ def test_format_hygiene_catches_empty_text() -> None:
     assert "empty" in result.detail
 
 
-@pytest.mark.parametrize("text", ["a <S>b</S>", "line\nbreak", "a > b"])
+@pytest.mark.parametrize("text", ["a <S>b<E>", "line\nbreak", "a > b"])
 def test_format_hygiene_catches_unrenderable_text(text: str) -> None:
     annotation = _annotation(
         utterances=(Utterance(face_id="F001", start=0.0, end=1.0, text=text),),

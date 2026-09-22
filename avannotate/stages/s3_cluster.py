@@ -28,8 +28,8 @@ from numpy.typing import NDArray
 
 from avannotate.coercion import coerce_number
 from avannotate.faces.cluster import DEFAULT_MAX_DISTANCE, cluster_vectors
-from avannotate.faces.track import Tracklet, TrackQuality
-from avannotate.stages import s1_faces, s2_tracks
+from avannotate.faces.track import TrackDetection, Tracklet, TrackQuality
+from avannotate.stages import s0_preprocess, s1_faces, s2_tracks
 from avannotate.stages.base import (
     Artifact,
     StageContext,
@@ -44,15 +44,126 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s3-cluster"
-VERSION = "s3-v1"
+#: v2: writes a reference still per identity.  Everything this stage
+#: produced before was numbers, and numbers cannot be looked at -- which
+#: matters because "who is F001?" is a question a person has to answer.
+VERSION = "s3-v2"
 
 IDENTITIES_NAME = "identities.json"
+#: One still per identity, under this stage's directory.
+REFERENCE_DIR = "faces"
+
+#: The reference still's longest side.  Big enough to recognise a face in,
+#: small enough that a hundred thousand of them is not a second dataset.
+REFERENCE_MAX_EDGE = 256
 SUMMARY_NAME = "summary.json"
 
 #: Below this normalised motion a tracklet is flagged as possibly set dressing.
 #: Flagged, not dropped: during a camera pan a wall object moves in frame too, so
 #: the signal is not reliable enough to act on by itself.
 DEFAULT_STATIC_MOTION = 0.005
+
+
+def _best_detection(members: Sequence[Tracklet]) -> TrackDetection | None:
+    """The clearest single sighting across a person's tracklets.
+
+    Detector score first and box area second: the score says how sure the
+    detector was, and between two equally sure sightings the larger face is the
+    one carrying more detail.
+    """
+
+    best: TrackDetection | None = None
+    best_key: tuple[float, float] | None = None
+    for tracklet in members:
+        for detection in tracklet.detections:
+            _, _, width, height = detection.box
+            key = (float(detection.score), float(width) * float(height))
+            if best_key is None or key > best_key:
+                best, best_key = detection, key
+    return best
+
+
+def write_reference_frames(
+    context: StageContext,
+    tracklets: Sequence[Tracklet],
+    identities: Sequence[Mapping[str, object]],
+) -> tuple[Path, ...]:
+    """One still per person, cut from their clearest sighting.
+
+    Everything else this stage writes is numbers, and numbers cannot be looked
+    at.  This is what answers "who is F001?" -- for someone checking that a
+    transcript was attributed to the right face, and for whatever downstream
+    wants a face to condition on.
+
+    One still and not a crop sequence: the question is *who*, and a person
+    answering it needs one clear frame.  The sequence is S7's business and
+    costs a hundred thousand files a corpus.
+
+    A failure here is a missing picture rather than a failed stage -- the still
+    is a reading aid, and everything it is derived from is already written.
+    """
+
+    import cv2
+
+    from avannotate.asd.crop import crop_box
+    from avannotate.faces.frames import read_frame
+
+    timeline = s0_preprocess.load_timeline(context)
+    by_id = {tracklet.track_id: tracklet for tracklet in tracklets}
+    written: list[Path] = []
+
+    for identity in identities:
+        face_id = str(identity.get("face_id", ""))
+        raw = identity.get("track_ids")
+        if not face_id or not isinstance(raw, list):
+            continue
+        members = [
+            by_id[track_id]
+            for track_id in (int(coerce_number(item, "track_id")) for item in raw)
+            if track_id in by_id
+        ]
+        best = _best_detection(members)
+        if best is None:
+            continue
+
+        frame = read_frame(
+            context.source, width=timeline.width, height=timeline.height, time=best.time
+        )
+        if frame is None:
+            continue
+
+        height, width = frame.shape[:2]
+        cut = crop_box(best.box, frame_width=width, frame_height=height)
+        patch = frame[cut.y : cut.y + cut.height, cut.x : cut.x + cut.width]
+        if cut.area == 0 or patch.size == 0:
+            continue
+
+        scale = REFERENCE_MAX_EDGE / max(patch.shape[:2])
+        if scale < 1.0:
+            # ``asarray`` for the dtype as much as the values: cv2 returns
+            # whatever its own arithmetic produced, and this has to stay the
+            # uint8 that a frame is.
+            patch = np.asarray(
+                cv2.resize(
+                    patch,
+                    (
+                        max(1, round(patch.shape[1] * scale)),
+                        max(1, round(patch.shape[0] * scale)),
+                    ),
+                    interpolation=cv2.INTER_AREA,
+                ),
+                dtype=np.uint8,
+            )
+
+        target = context.output(STAGE, f"{REFERENCE_DIR}/{face_id}.jpg")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # cv2 writes BGR and read_frame hands back RGB.  Converted here rather
+        # than asking ffmpeg for bgr24, so the decoder keeps one pixel format
+        # for every caller rather than one per consumer.
+        cv2.imwrite(str(target), cv2.cvtColor(patch, cv2.COLOR_RGB2BGR))
+        written.append(target)
+
+    return tuple(written)
 
 
 @dataclass(frozen=True)
@@ -284,6 +395,9 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
 
     identities = cluster_tracklets(kept, vectors, config)
 
+    # The one thing this stage writes that can be looked at.
+    references = write_reference_frames(context, kept, identities)
+
     identities_path = write_json(
         context.output(STAGE, IDENTITIES_NAME),
         {
@@ -308,13 +422,14 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
                 "min": min((len(i["track_ids"]) for i in identities), default=0),  # type: ignore[arg-type]
                 "max": max((len(i["track_ids"]) for i in identities), default=0),  # type: ignore[arg-type]
             },
+            "reference_frames": len(references),
             "suspect_static": sum(1 for i in identities if i["suspect_static"]),
         },
     )
 
     artifacts = tuple(
         Artifact.capture(context.work_dir, path)
-        for path in (identities_path, summary_path)
+        for path in (identities_path, summary_path, *references)
     )
     state.save(
         StageRecord(
@@ -335,6 +450,7 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
             "identities": len(identities),
             "from_tracklets": len(tracklets),
             "dropped": len(dropped),
+            "faces": len(references),
         },
     )
 

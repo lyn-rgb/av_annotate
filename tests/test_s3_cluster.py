@@ -344,3 +344,78 @@ def test_loaders_fail_loudly_when_the_stage_has_not_run(tmp_path: Path) -> None:
         s3_cluster.load_identities(context)
     with pytest.raises(FileNotFoundError, match="run s3-cluster first"):
         s3_cluster.identities_path(context)
+
+
+# --------------------------------------------------------------------------- #
+# the reference stills
+# --------------------------------------------------------------------------- #
+#
+# The one thing this stage writes that can be looked at.  Worth its own tests
+# for the reason it exists: a writer can produce nothing, report success, and
+# leave a directory that every other assertion here walks straight past.
+
+
+def test_an_identity_in_frame_gets_a_reference_still(staged: Any) -> None:
+    """"Who is F001?" is not a question numbers answer.
+
+    Everything else S3 produces is boxes and vectors.  Somebody checking that a
+    transcript was attributed to the right face has to be able to see the face.
+    """
+
+    s3_cluster.run(staged)
+    still = staged.stage_dir(s3_cluster.STAGE) / s3_cluster.REFERENCE_DIR / "F001.jpg"
+
+    assert still.is_file()
+    assert still.stat().st_size > 0
+
+
+def test_the_reference_still_is_an_image_and_not_an_empty_file(staged: Any) -> None:
+    """Guards the guard: a zero-byte file satisfies "the file is there"."""
+
+    import cv2
+
+    s3_cluster.run(staged)
+    still = (
+        staged.stage_dir(s3_cluster.STAGE) / s3_cluster.REFERENCE_DIR / "F001.jpg"
+    )
+
+    image = cv2.imread(str(still))
+
+    assert image is not None, "the still does not decode as an image"
+    # A face crop, not a one-pixel placeholder and not the whole frame.
+    assert min(image.shape[:2]) > 8
+    assert max(image.shape[:2]) <= s3_cluster.REFERENCE_MAX_EDGE
+
+
+def test_an_identity_that_is_never_in_frame_gets_no_still(staged: Any) -> None:
+    """And that is the correct answer, not a silent failure.
+
+    This fixture's second person is reported at x=400 in a 320-wide frame, so
+    there is no picture of them to cut out.  A blank tile would be worse than
+    nothing -- it would look like a face that failed to render rather than a
+    face the video never showed -- and the count in the summary is what makes
+    the absence visible rather than silent.
+    """
+
+    s3_cluster.run(staged)
+
+    assert not (
+        staged.stage_dir(s3_cluster.STAGE) / s3_cluster.REFERENCE_DIR / "F002.jpg"
+    ).is_file()
+
+    summary = json.loads(
+        (staged.stage_dir(s3_cluster.STAGE) / "summary.json").read_text()
+    )
+    assert summary["identities"] == 2
+    assert summary["reference_frames"] == 1
+
+
+def test_the_stills_are_recorded_as_artifacts(staged: Any) -> None:
+    """Otherwise a deleted or edited one is never noticed, and the resume record
+    goes on saying the stage is done."""
+
+    s3_cluster.run(staged)
+    state = json.loads((staged.work_dir / "stage_state.json").read_text())
+    record = next(item for item in state["stages"] if item["stage"] == s3_cluster.STAGE)
+
+    assert "s3-cluster/faces/F001.jpg" in {item["path"] for item in record["artifacts"]}

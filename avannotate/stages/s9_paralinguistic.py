@@ -2,7 +2,7 @@
 
 S7 gave each segment its own audio, S8 gave it words.  This gives it a manner --
 one tag from a closed vocabulary, rendered before the spoken text as
-``<F001> whispering: <S>...</S>``.
+``<F001> whispering: <S>...<E>``.
 
 Three models, one tag
 ---------------------

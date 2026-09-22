@@ -75,7 +75,7 @@ STAGE = "s11-compose"
 #: message was useless.  Bumped because the report is S11's artifact and
 #: nothing else about the stage changed: without this the stage would skip
 #: and reprint the old one.
-VERSION = "s11-v3"
+VERSION = "s11-v4"
 
 SCRIPT_NAME = "annotation.txt"
 ANNOTATION_NAME = "annotation.json"

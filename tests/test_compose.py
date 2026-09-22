@@ -255,7 +255,7 @@ def test_a_face_with_no_detections_is_left_out_rather_than_faked() -> None:
 
 
 def test_an_empty_transcript_is_not_an_utterance() -> None:
-    """A line like ``<F001> <S></S>`` promises speech the pipeline cannot keep."""
+    """A line like ``<F001> <S><E>`` promises speech the pipeline cannot keep."""
 
     built = utterances(
         [_segment()],
@@ -468,7 +468,7 @@ def test_the_written_deliverable_parses_back_into_what_it_came_from(
     text = s11_compose.load_script(context)
     recovered = s11_compose.load_annotation(context)
 
-    assert "<F001> whispering: <S>I was late for work today</S>" in text
+    assert "<F001> whispering: <S>I was late for work today<E>" in text
     assert "[GLOBAL]" in text
     assert recovered.utterances[0].text == "I was late for work today"
     assert recovered.global_caption == "A bright living room."

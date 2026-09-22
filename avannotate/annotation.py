@@ -13,12 +13,12 @@ Format::
 
     [SHOT 1 0.0s-12.4s]
     A bright living room with a sofa and a coffee table.
-    <F001> whispering: <S>I was late for work today</S>
-    <F002> surprised: <S>What's going on?</S>
+    <F001> whispering: <S>I was late for work today<E>
+    <F002> surprised: <S>What's going on?<E>
 
     [SHOT 2 12.4s-31.0s]
     The camera moves closer to the window.
-    <F001> <S>I forgot my phone</S>
+    <F001> <S>I forgot my phone<E>
 
 Shape rules, all load-bearing:
 
@@ -48,16 +48,27 @@ from avannotate.schema import (
     Word,
 )
 
+#: The closing marker: ``<E>`` written, either accepted on the way back in.
+#:
+#: ``<E>`` is what the clone_voice manifests -- and so LTX-2's training data --
+#: actually use.  The converter that rewrites this markup for LTX-2 opens with
+#: ``<S>…<E>`` and carries ``</S>`` only as a tolerance, in its own words,
+#: "because the two ends are written by hand on the data side and drift between
+#: files".  This is not written by hand, so it writes the real one; it reads
+#: both, for the same reason the converter does -- an annotation that has been
+#: through somebody's editor should still parse.
+_CLOSE = r"(?:</\s*S\s*>|<\s*E\s*>)"
+
 #: The utterance grammar.  Anchored at both ends so a line either matches
 #: completely or is treated as caption text -- a partially-matching line would
 #: otherwise lose its tail silently.
-UTTERANCE_RE = re.compile(r"^<F(\d+)>\s*([\w-]+)?:?\s*<S>(.*?)</S>$")
+UTTERANCE_RE = re.compile(rf"^<F(\d+)>\s*([\w-]+)?:?\s*<S>(.*?){_CLOSE}$")
 
 #: The same grammar, unanchored, for the flat rendering where utterances sit
-#: inside a paragraph of prose: ``<caption>, <F001> tag: <S>...</S>, <F002>...``.
+#: inside a paragraph of prose: ``<caption>, <F001> tag: <S>...<E>, <F002>...``.
 #: Kept as a separate pattern rather than relaxing the anchored one, so the
 #: two-level form stays strict about what constitutes a whole utterance line.
-UTTERANCE_SEARCH_RE = re.compile(r"<F(\d+)>\s*([\w-]+)?:?\s*<S>(.*?)</S>")
+UTTERANCE_SEARCH_RE = re.compile(rf"<F(\d+)>\s*([\w-]+)?:?\s*<S>(.*?){_CLOSE}")
 
 _SHOT_HEADER_RE = re.compile(r"^\[SHOT\s+(\d+)\s+([0-9.]+)s-([0-9.]+)s\]$")
 
@@ -108,7 +119,7 @@ def _utterance_line(utterance: Utterance) -> str:
                 f"utterance text for {utterance.face_id} at {utterance.start:.2f}s "
                 f"contains {unsafe!r}, which the line grammar cannot carry"
             )
-    if "<S>" in text or "</S>" in text:
+    if "<S>" in text or "</S>" in text or "<E>" in text:
         raise AnnotationFormatError(
             f"utterance text for {utterance.face_id} contains the span markers"
         )
@@ -122,7 +133,7 @@ def _utterance_line(utterance: Utterance) -> str:
                 f"tag {utterance.tag!r} is outside the [\\w-]+ charset the parser can recover"
             )
         prefix = f"<{utterance.face_id}> {normalized}: "
-    return f"{prefix}<S>{text}</S>"
+    return f"{prefix}<S>{text}<E>"
 
 
 def _sorted_utterances(annotation: Annotation) -> tuple[Utterance, ...]:
