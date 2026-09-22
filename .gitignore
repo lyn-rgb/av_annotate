@@ -43,3 +43,8 @@ data/examples/
 # source: it holds copies of other people's repositories and multi-GB weights.
 /offline-bundle/
 *.tar
+
+# Transfer tarballs are built, not source.  scripts/make_transfer_zip.sh
+# writes one next to the checkout every time it runs.
+/*.tgz
+/*.zip
