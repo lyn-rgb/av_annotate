@@ -61,7 +61,13 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s5-asd"
-VERSION = "s5-v1"
+#: v2: the audio frontend was a generic log-mel rather than VGGish's, which
+#: made every probability this stage produced meaningless.  The bump is what
+#: makes the stage re-run -- ``reason_to_run`` compares this string, and the
+#: fix changed neither the config nor any input, so a v1 record would have
+#: been considered current and the bad numbers reused.  See
+#: :func:`avannotate.asd.model.log_mel`.
+VERSION = "s5-v2"
 
 SPEAKING_NAME = "speaking.jsonl"
 SUMMARY_NAME = "summary.json"
@@ -147,7 +153,9 @@ def _score_window(
         start_seconds=window.start,
         duration_seconds=window.frame_count / timeline.fps,
     )
-    features = features_for_window(audio, video_frames=window.frame_count)
+    features = features_for_window(
+        audio, video_frames=window.frame_count, fps=timeline.fps
+    )
 
     by_id = {tracklet.track_id: tracklet for tracklet in tracklets}
     results: dict[int, NDArray[np.float32]] = {}
@@ -238,6 +246,13 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
                 "model": model.name,
                 "device": getattr(model, "device", None),
                 "windows": len(plan.windows),
+                # How much of the checkpoint the encoder recognised.  Recorded
+                # by the adapter since the beginning and never written down
+                # anywhere: if the weights do not belong to this network,
+                # ``missing`` is most of them and every score below is noise
+                # from an untrained encoder, which looks exactly like a model
+                # that is merely unimpressed by the video.
+                "checkpoint_load": getattr(model, "load_report", None),
             },
         )
         model_name = model.name

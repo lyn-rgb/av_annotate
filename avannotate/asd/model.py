@@ -8,7 +8,7 @@ Hollywood footage AVA is drawn from, and it beats EASEE on small faces, which a
 The interface is deliberately small -- crops and features in, probabilities out.
 
 Every number in the frontend below was read off the LoCoNet repository's source
-rather than inferred, and three of them were wrong while they were inferred:
+rather than inferred, and four of them were wrong while they were inferred:
 
 1. **The crop margin is zero.**  ``cropScale = 0.40`` is TalkNet's and LoCoNet
    does not inherit it -- that string does not appear anywhere in the
@@ -20,6 +20,19 @@ rather than inferred, and three of them were wrong while they were inferred:
 3. **The crops are 0..255.**  LoCoNet normalises inside its own visual frontend,
    ``(x / 255 - 0.4161) / 0.1688``, so scaling beforehand applies the shift
    twice -- silently, and to every frame of every video.
+4. **The audio features are VGGish's, not a generic log-mel.**  Nothing in the
+   repository calls ``torchaudio``.  Every dataloader reaches the audio through
+   ``torchvggish.vggish_input.waveform_to_examples``, and that fixes five
+   constants this module used to get wrong: a 25 ms window and so a 512-point
+   FFT (not 20 ms and 320), mel edges at 125 and 7500 Hz (not 0 and 8000), a
+   *magnitude* spectrogram (not power), a periodic Hann rather than torchaudio's
+   symmetric default, and ``log(mel + 0.01)`` rather than ``log(mel.clamp(1e-6))``.
+
+   This one is worth dwelling on, because *the band count was right*.  The
+   tensor was ``[4T, 64]`` and the model accepted it, so every shape check in
+   this file passed while the values underneath were a different transform
+   altogether.  A frontend is a convention, not a shape, and only one of those
+   two was ever checked.  See :func:`log_mel`.
 
 **The repository is usable, narrowly.**  Its ``loconet.py`` and ``train.py``
 cannot be imported -- both need an ``xxlib`` module the repository does not
@@ -72,6 +85,31 @@ _MEL_BINS = 64
 #: 16 kHz is the pipeline's audio standard and what the features are for.
 _SAMPLE_RATE = 16_000
 
+#: VGGish's feature constants, from the checkout's
+#: ``torchvggish/vggish_params.py``.  They are not defaults anywhere in
+#: ``torchaudio``, and every one of them changes the features.
+_VGGISH_WINDOW_SECONDS = 0.025
+_VGGISH_HOP_SECONDS = 0.010
+_VGGISH_MEL_MIN_HZ = 125.0
+_VGGISH_MEL_MAX_HZ = 7500.0
+_VGGISH_LOG_OFFSET = 0.01
+
+#: Amplitude scale of the samples the features are computed from.
+#:
+#: The dataloaders read their WAVs with ``scipy.io.wavfile.read``, which returns
+#: **int16** for this corpus's 16-bit PCM -- not the ``[-1, 1]`` floats that
+#: ``vggish_input``'s docstring invites.  The features are then a logarithm, so
+#: the scale does not divide out: at the loud end the two conventions differ by
+#: ``ln(32768) = 10.4`` and at the quiet end by almost nothing, because the
+#: ``+ 0.01`` offset dominates there.  That is a change in dynamic range, not a
+#: constant gain, and a constant gain is the only thing the first convolution's
+#: bias could have absorbed.
+_VGGISH_SAMPLE_SCALE = 32768.0
+
+#: HTK's mel scale, the one VGGish uses.
+_MEL_BREAK_FREQUENCY_HZ = 700.0
+_MEL_HIGH_FREQUENCY_Q = 1127.0
+
 
 class AsdError(RuntimeError):
     """The model could not be built or run."""
@@ -97,70 +135,176 @@ class AsdModel(Protocol):
         ...
 
 
+def _periodic_hann(window_length: int) -> NDArray[np.float64]:
+    """VGGish's Hann window: one full period of a length-*N* cosine.
+
+    Not ``np.hanning``, which is the *symmetric* window -- a period-``N-1``
+    cosine whose first and last samples both land on zero.  The two differ by
+    exactly one sample of phase and VGGish is explicit about wanting this one.
+    """
+
+    return 0.5 - 0.5 * np.cos(2.0 * np.pi / window_length * np.arange(window_length))
+
+
+def _hertz_to_mel(frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
+    """HTK's mel scale.  Slaney's is the other one, and torchaudio's default."""
+
+    return _MEL_HIGH_FREQUENCY_Q * np.log(1.0 + frequencies / _MEL_BREAK_FREQUENCY_HZ)
+
+
+def _mel_matrix(
+    *,
+    n_mels: int,
+    num_spectrogram_bins: int,
+    sample_rate: int,
+    lower_edge_hz: float,
+    upper_edge_hz: float,
+) -> NDArray[np.float64]:
+    """VGGish's triangular filterbank, as a ``[bins, n_mels]`` post-multiply.
+
+    Transcribed rather than called: the checkout's own
+    :func:`~torchvggish.mel_features.spectrogram_to_mel_matrix` would be the
+    sturdier thing to lean on, but importing it drags in ``resampy`` and
+    ``soundfile`` through the package's ``vggish_input`` and needs the LoCoNet
+    checkout on ``sys.path`` -- which is configured per-stage and may not be
+    there.  :mod:`tests.test_asd` pins this against that function when the
+    checkout is present, which is the part that actually keeps them equal.
+    """
+
+    nyquist = sample_rate / 2.0
+    if not 0.0 <= lower_edge_hz < upper_edge_hz <= nyquist:
+        raise ValueError(
+            f"mel edges {lower_edge_hz}..{upper_edge_hz} Hz are not inside 0..{nyquist}"
+        )
+
+    bins_hz = np.linspace(0.0, nyquist, num_spectrogram_bins)
+    bins_mel = _hertz_to_mel(bins_hz)
+    # One edge per band boundary, so the bands need two more edges than they
+    # have interiors: edge i, centre i, edge i+1 for band i.
+    edges = np.linspace(
+        _hertz_to_mel(lower_edge_hz), _hertz_to_mel(upper_edge_hz), n_mels + 2
+    )
+
+    weights = np.empty((num_spectrogram_bins, n_mels), dtype=np.float64)
+    for index in range(n_mels):
+        lower, centre, upper = edges[index : index + 3]
+        # Slopes are linear in mel, not in hertz -- that is the whole point of
+        # the scale, and doing it in hertz is a filterbank that looks right and
+        # is not.
+        rising = (bins_mel - lower) / (centre - lower)
+        falling = (upper - bins_mel) / (upper - centre)
+        weights[:, index] = np.maximum(0.0, np.minimum(rising, falling))
+    # The DC bin is excluded by HTK, explicitly.
+    weights[0, :] = 0.0
+    return weights
+
+
+def _stft_magnitude(
+    signal: NDArray[np.float64], *, fft_length: int, hop_length: int, window_length: int
+) -> NDArray[np.float64]:
+    """VGGish's framing and FFT: no padding, no centring, magnitude only.
+
+    ``fft_length`` is deliberately larger than ``window_length`` -- 512 against
+    400 -- so the spectrum is zero-padded to the next power of two, which is
+    what VGGish does and what a 320-point no-padding FFT did not.
+    """
+
+    num_frames = 1 + int(np.floor((len(signal) - window_length) / hop_length))
+    if num_frames <= 0:
+        return np.zeros((0, fft_length // 2 + 1), dtype=np.float64)
+    # A view, not a copy: an hour of 16 kHz audio is 230 MB and framing it by
+    # copying would be most of a gigabyte for no reason.  VGGish does the same
+    # with stride tricks.
+    frames = np.lib.stride_tricks.as_strided(
+        signal,
+        shape=(num_frames, window_length),
+        strides=(signal.strides[0] * hop_length, signal.strides[0]),
+    )
+    return np.abs(np.fft.rfft(frames * _periodic_hann(window_length), int(fft_length), axis=1))
+
+
 def log_mel(
     samples: NDArray[np.float32],
     *,
     sample_rate: int = _SAMPLE_RATE,
     n_mels: int = _MEL_BINS,
-    hop_length: int | None = None,
+    fps: float = _ASSUMED_VIDEO_FPS,
 ) -> NDArray[np.float32]:
-    """Log-mel features shaped as the loader expects.
+    """The log-mel features LoCoNet was trained on, i.e. VGGish's.
 
-    ``hop_length`` defaults to whatever puts four feature frames under each
-    video frame at 25 fps -- 160 samples at 16 kHz -- because that relationship
-    is what the loader's ``audio_t == video_t * 4`` check encodes.  Pass it
-    explicitly if a different output frame rate is wanted; the model will not
-    agree, but a caller comparing frontends needs to be able to vary it.
+    ``fps`` is not decoration.  The repository scales both the analysis window
+    and the hop by ``25 / fps``, which keeps four feature frames under every
+    video frame whatever the video's rate is; at 25 fps that is the textbook
+    VGGish 25 ms / 10 ms pair and the two agree, but a 30 fps video would get a
+    400-sample window and a 160-sample hop here against the reference's 333 and
+    133.  Passing the timeline's fps is what keeps the two from drifting apart
+    on a corpus that is not all 25 fps.
+
+    ``samples`` are the pipeline's ``[-1, 1]`` floats and are rescaled to the
+    int16 range internally -- see :data:`_VGGISH_SAMPLE_SCALE` for why that is
+    not optional.
     """
 
-    try:
-        import torch
-        import torchaudio
-    except ModuleNotFoundError as error:
-        raise AsdError(
-            "torch and torchaudio are required for the audio frontend: "
-            "pip install torch torchaudio"
-        ) from error
+    window_seconds = _VGGISH_WINDOW_SECONDS * _ASSUMED_VIDEO_FPS / fps
+    hop_seconds = _VGGISH_HOP_SECONDS * _ASSUMED_VIDEO_FPS / fps
+    window_length = int(round(sample_rate * window_seconds))
+    hop_length = int(round(sample_rate * hop_seconds))
+    if window_length <= 0 or hop_length <= 0:
+        raise ValueError(f"fps {fps} gives a degenerate window or hop")
+    # The next power of two at or above the window, as VGGish computes it.
+    fft_length = 2 ** int(np.ceil(np.log2(window_length)))
 
-    if hop_length is None:
-        hop_length = int(round(sample_rate / (_ASSUMED_VIDEO_FPS * _AUDIO_FRAMES_PER_VIDEO_FRAME)))
-
-    waveform = torch.from_numpy(np.asarray(samples, dtype=np.float32))
-    transform = torchaudio.transforms.MelSpectrogram(
-        sample_rate=sample_rate,
-        n_fft=hop_length * 2,
-        win_length=hop_length * 2,
-        hop_length=hop_length,
-        n_mels=n_mels,
-        power=2.0,
+    signal = np.asarray(samples, dtype=np.float64) * _VGGISH_SAMPLE_SCALE
+    spectrogram = _stft_magnitude(
+        signal, fft_length=fft_length, hop_length=hop_length, window_length=window_length
     )
-    mel = transform(waveform)
-    features = torch.log(mel.clamp(min=1e-6)).transpose(0, 1).contiguous()
-    return np.asarray(features.numpy(), dtype=np.float32)
+    matrix = _mel_matrix(
+        n_mels=n_mels,
+        num_spectrogram_bins=spectrogram.shape[1],
+        sample_rate=sample_rate,
+        lower_edge_hz=_VGGISH_MEL_MIN_HZ,
+        upper_edge_hz=_VGGISH_MEL_MAX_HZ,
+    )
+    # The BLAS under this matmul leaks floating-point status flags on some
+    # builds: an all-ones ``(98, 257) @ (257, 64)`` -- which cannot divide by
+    # zero or overflow -- raises all three of numpy's warnings on the machine
+    # this was written on, and the real output is finite throughout.  Silenced
+    # rather than left to flood a run's log, because this is once per window per
+    # track and a corpus is thousands of them.
+    with np.errstate(all="ignore"):
+        mel = spectrogram @ matrix
+    return np.asarray(np.log(mel + _VGGISH_LOG_OFFSET), dtype=np.float32)
 
 
 def features_for_window(
-    samples: NDArray[np.float32], *, video_frames: int
+    samples: NDArray[np.float32], *, video_frames: int, fps: float = _ASSUMED_VIDEO_FPS
 ) -> NDArray[np.float32]:
     """Log-mel trimmed to exactly four feature frames per video frame.
 
-    The trim is not cosmetic.  ``MelSpectrogram`` centres its windows by
-    default, so it returns ``len // hop + 1`` frames -- one more than the
-    ``4T`` the loader expects -- and the model would reject the batch, or worse,
-    silently misalign the audio against the video by one feature frame.
+    The trim is not cosmetic: the loader asserts ``audio_t == video_t * 4``, and
+    a batch off by a frame would reject -- or worse, silently misalign the audio
+    against the video.
+
+    VGGish's own framing runs short rather than long.  With no padding and no
+    centring, a window of *T* video frames yields ``4T - 2`` feature frames, not
+    ``4T``, so this pads rather than trims in the common case.  The repository
+    pads the same two frames with ``np.pad(..., 'wrap')``, and so does this:
+    silence would be a claim about those 20 ms that the audio did not make.
     """
 
     if video_frames <= 0:
         raise ValueError(f"video_frames must be positive, got {video_frames}")
 
-    features = log_mel(samples)
+    features = log_mel(samples, fps=fps)
     needed = video_frames * _AUDIO_FRAMES_PER_VIDEO_FRAME
     if len(features) >= needed:
         return features[:needed]
-    # A short tail -- the end of the file -- is padded with silence rather than
-    # dropped, so the batch keeps its shape.
-    pad = np.zeros((needed - len(features), features.shape[1]), dtype=np.float32)
-    return np.asarray(np.concatenate([features, pad], axis=0), dtype=np.float32)
+    if len(features) == 0:
+        return np.zeros((needed, _MEL_BINS), dtype=np.float32)
+    # Wrapped from the start of the window, matching the repository's pad.
+    shortage = needed - len(features)
+    wrapped = features[np.arange(shortage) % len(features)]
+    return np.asarray(np.concatenate([features, wrapped], axis=0), dtype=np.float32)
 
 
 #: What the released AVA checkpoint was trained with.  The speaker count is

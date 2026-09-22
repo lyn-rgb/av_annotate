@@ -9,10 +9,14 @@ network to test.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from avannotate.asd.crop import CropBox, clamp_box, crop_box
+from avannotate.asd.model import features_for_window, log_mel
 from avannotate.asd.stitch import stitch_predictions
 from avannotate.asd.types import AsdResult, SpeakingSample, TrackSpeaking, Window
 from avannotate.asd.window import (
@@ -367,3 +371,194 @@ def test_asd_result_round_trips() -> None:
     assert result.sample_count == 3
     assert result.for_track(7) is not None
     assert result.for_track(8) is None
+
+
+# --------------------------------------------------------------------------- #
+# the audio frontend
+# --------------------------------------------------------------------------- #
+
+#: The LoCoNet checkout, when it has been vendored next to the repo.
+LOCO_NET_REPO = Path(__file__).resolve().parents[1] / "models" / "loconet" / "LoCoNet_ASD"
+
+
+@pytest.fixture(scope="module")
+def vggish() -> object:
+    """VGGish's own feature code, out of the LoCoNet checkout.
+
+    The point of the parity test below is to compare against the reference
+    rather than against another transcription of it, so this reaches for the
+    real thing.  It skips rather than fails when the checkout is absent, which
+    is the normal state of a machine that has not been given the models yet.
+    """
+
+    if not (LOCO_NET_REPO / "torchvggish" / "mel_features.py").is_file():
+        pytest.skip(f"LoCoNet checkout not present at {LOCO_NET_REPO}")
+    sys.path.insert(0, str(LOCO_NET_REPO))
+    try:
+        from torchvggish import mel_features, vggish_params
+    finally:
+        sys.path.remove(str(LOCO_NET_REPO))
+    return mel_features, vggish_params
+
+
+def test_the_audio_frontend_is_vggishs_and_not_a_lookalike(vggish: object) -> None:
+    """The test this frontend was missing.
+
+    Every shape check in ``asd.model`` passed while the features underneath were
+    a different transform: the band count was right, so ``[4T, 64]`` came out
+    either way and the model accepted both.  The constants that were wrong --
+    window length, filterbank edges, magnitude against power, the log offset --
+    are all invisible from the outside, so nothing short of comparing values
+    against the reference implementation can catch them.  It was wrong for the
+    whole of the first server run and every score it produced was meaningless.
+    """
+
+    mel_features, params = vggish  # type: ignore[misc]
+    samples = (np.random.default_rng(0).standard_normal(16_000) * 0.1).astype(np.float32)
+
+    reference = mel_features.log_mel_spectrogram(
+        # VGGish is handed int16-range samples by the dataloaders, via
+        # ``scipy.io.wavfile.read``; see ``_VGGISH_SAMPLE_SCALE``.
+        samples * 32768.0,
+        audio_sample_rate=params.SAMPLE_RATE,
+        log_offset=params.LOG_OFFSET,
+        window_length_secs=params.STFT_WINDOW_LENGTH_SECONDS,
+        hop_length_secs=params.STFT_HOP_LENGTH_SECONDS,
+        num_mel_bins=params.NUM_MEL_BINS,
+        lower_edge_hertz=params.MEL_MIN_HZ,
+        upper_edge_hertz=params.MEL_MAX_HZ,
+    )
+    ours = log_mel(samples)
+
+    assert ours.shape == reference.shape
+    assert ours == pytest.approx(reference, rel=1e-4, abs=1e-4)
+
+
+def test_the_reference_would_disagree_with_a_generic_log_mel(vggish: object) -> None:
+    """Guards the guard: the parity test has to be able to fail.
+
+    If the reference and a plain ``torchaudio`` log-mel happened to agree, the
+    test above would pass on either and prove nothing.  This pins that they do
+    not -- so the parity assertion is load-bearing rather than decorative.
+    """
+
+    mel_features, params = vggish  # type: ignore[misc]
+    samples = (np.random.default_rng(3).standard_normal(16_000) * 0.1).astype(np.float32)
+    reference = mel_features.log_mel_spectrogram(
+        samples * 32768.0,
+        audio_sample_rate=params.SAMPLE_RATE,
+        log_offset=params.LOG_OFFSET,
+        window_length_secs=params.STFT_WINDOW_LENGTH_SECONDS,
+        hop_length_secs=params.STFT_HOP_LENGTH_SECONDS,
+        num_mel_bins=params.NUM_MEL_BINS,
+        lower_edge_hertz=params.MEL_MIN_HZ,
+        upper_edge_hertz=params.MEL_MAX_HZ,
+    )
+
+    # Skipped rather than failed where the frontend's own dependencies are
+    # absent: this test's subject is the reference's distance from a generic
+    # log-mel, not whether torchaudio is installed.
+    torch = pytest.importorskip("torch")
+    torchaudio = pytest.importorskip("torchaudio")
+
+    waveform = torch.from_numpy(samples) * 32768.0
+    generic = torch.log(
+        torchaudio.transforms.MelSpectrogram(
+            sample_rate=16_000, n_fft=320, win_length=320, hop_length=160,
+            n_mels=64, power=2.0,
+        )(waveform).clamp(min=1e-6)
+    ).transpose(0, 1)
+
+    shared = min(len(reference), len(generic))
+    # Not merely different in detail: different by tens of dB, which is what
+    # makes the frontend a convention rather than a rounding difference.
+    assert float(np.abs(reference[:shared] - generic[:shared].numpy()).max()) > 10.0
+
+
+@pytest.mark.parametrize("video_frames", [1, 25, 200])
+def test_features_of_a_window_are_four_per_video_frame(video_frames: int) -> None:
+    """The loader asserts ``audio_t == video_t * 4``; this is that contract."""
+
+    samples = np.zeros(int(16_000 * video_frames / 25.0), dtype=np.float32)
+    features = features_for_window(samples, video_frames=video_frames, fps=25.0)
+    assert features.shape == (video_frames * 4, 64)
+
+
+def test_a_window_is_padded_by_wrapping_and_not_by_silence() -> None:
+    """The common path, not an edge case.
+
+    VGGish frames without padding or centring, so a window of *T* video frames
+    yields ``4T - 2`` feature frames and *every* window needs those two.  The
+    repository wraps -- ``np.pad(..., 'wrap')`` -- and silence would be a claim
+    about 20 ms of audio that was never made.
+    """
+
+    samples = (np.random.default_rng(1).standard_normal(640) * 0.2).astype(np.float32)
+    features = features_for_window(samples, video_frames=1, fps=25.0)
+
+    assert features.shape == (4, 64)
+    # 1 + floor((640 - 400) / 160) = 2 real frames, then 2 wrapped ones.
+    assert features[2] == pytest.approx(features[0])
+    assert features[3] == pytest.approx(features[1])
+    # Neither is the log of a reflection coefficient, which is what a silent
+    # frame would give.
+    assert not np.allclose(features[2], np.log(0.01), atol=0.5)
+
+
+def test_the_filterbank_starts_at_125_hz() -> None:
+    """VGGish's lower edge, against the 0 Hz a default filterbank starts at.
+
+    Nothing about the frontend's *output* distinguishes the two: either way you
+    get 64 bands of plausible-looking numbers, which is why this is asserted on
+    the filterbank rather than on a spectrogram.
+    """
+
+    from avannotate.asd.model import _mel_matrix
+
+    matrix = _mel_matrix(
+        n_mels=64,
+        num_spectrogram_bins=257,
+        sample_rate=16_000,
+        lower_edge_hz=125.0,
+        upper_edge_hz=7500.0,
+    )
+    # 257 bins across 0..8000 Hz puts the first four at 0, 31.25, 62.5 and
+    # 93.75 Hz -- all under the edge, and all carrying no weight at all.
+    bins_hz = np.linspace(0.0, 8000.0, 257)
+    assert matrix[bins_hz < 125.0].sum() == 0.0
+    # The bands above it do reach, or an all-zero filterbank would pass too.
+    assert matrix[bins_hz >= 125.0].sum() > 50.0
+
+
+def test_a_tone_below_the_lower_edge_is_attenuated() -> None:
+    """The same edge, end to end, on audible numbers.
+
+    60 Hz rather than 100 Hz: the Hann window's main lobe is four bins wide and
+    the bins are 40 Hz apart, so a tone sitting 25 Hz under the edge reaches
+    across it and loses only about 2 dB.  60 Hz is far enough below to be
+    genuinely outside.
+    """
+
+    time = np.arange(16_000) / 16_000
+    below = np.sin(2.0 * np.pi * 60.0 * time).astype(np.float32)
+    inside = np.sin(2.0 * np.pi * 1000.0 * time).astype(np.float32)
+    assert float(log_mel(below).max()) < float(log_mel(inside).max()) - 3.0
+
+
+def test_fps_scales_the_analysis_window() -> None:
+    """The repository scales the window and hop by ``25 / fps``.
+
+    At 30 fps that is a 333-sample window and a 133-sample hop.  Taking the
+    25 fps constants for a 30 fps video would misalign four feature frames per
+    video frame by a few milliseconds each, which is the kind of drift that
+    reads as a model which is merely unimpressed.
+    """
+
+    samples = np.zeros(16_000, dtype=np.float32)
+    at_25 = log_mel(samples, fps=25.0)
+    at_30 = log_mel(samples, fps=30.0)
+    # 1 + floor((16000 - 400)/160) = 98 frames against
+    # 1 + floor((16000 - 333)/133) = 118: the same audio, sampled differently.
+    assert len(at_25) != len(at_30)
+    assert len(at_25) == 98
+    assert len(at_30) == 118

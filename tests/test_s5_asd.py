@@ -86,10 +86,14 @@ def staged(single_shot_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPa
     # The audio frontend needs torch, which is not installed here.  Stubbing it
     # alongside the model keeps the test on what the stage owns -- the loop and
     # the shapes -- rather than on the frontend's arithmetic.
-    feature_calls: list[int] = []
+    #: ``(sample count, fps)`` per call.  The rate is recorded because the stage
+    #: has to forward the timeline's, and VGGish scales its analysis window and
+    #: hop by it -- a stage quietly using the 25 fps default would put every
+    #: feature frame of a 30 fps video in the wrong place, silently.
+    feature_calls: list[tuple[int, float]] = []
 
-    def stub_features(samples: Any, *, video_frames: int) -> np.ndarray:
-        feature_calls.append(len(samples))
+    def stub_features(samples: Any, *, video_frames: int, fps: float) -> np.ndarray:
+        feature_calls.append((len(samples), fps))
         return np.zeros((video_frames * 4, MEL_BINS), dtype=np.float32)
 
     monkeypatch.setattr(s5_asd, "features_for_window", stub_features)
@@ -176,10 +180,12 @@ def test_the_frontend_is_given_samples_spanning_the_window(staged: Any) -> None:
 
     timeline = s0_preprocess.load_timeline(context)
     assert feature_calls, "the frontend was never called"
-    for sample_count in feature_calls:
+    for sample_count, fps in feature_calls:
         assert sample_count > 0
         # A window is at most the whole clip, so no call can ask for more.
         assert sample_count <= int(timeline.audio_duration * timeline.sample_rate) + 1
+        # And the video's own rate, not the frontend's 25 fps default.
+        assert fps == pytest.approx(timeline.fps)
 
 
 def test_the_summary_records_the_window_plan(staged: Any) -> None:
