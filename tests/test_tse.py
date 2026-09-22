@@ -22,7 +22,7 @@ from avannotate.segment import SegmentationConfig
 from avannotate.stages import s0_preprocess, s2_tracks, s3_cluster, s6_associate, s7_tse
 from avannotate.stages.base import StageContext
 from avannotate.tse.crop_video import crop_tile, iter_tiles, write_crop_video
-from avannotate.tse.model import TseError, build_extractor
+from avannotate.tse.model import ClearerVoiceExtractor, TseError, build_extractor
 from avannotate.tse.plan import (
     ExtractionSegment,
     context_window,
@@ -713,3 +713,110 @@ def test_loaders_fail_loudly_when_the_stage_has_not_run(tmp_path: Path) -> None:
         s7_tse.load_segments(context)
     with pytest.raises(FileNotFoundError, match="run s7-tse first"):
         s7_tse.segments_path(context)
+
+
+# --------------------------------------------------------------------------- #
+# the adapter itself
+# --------------------------------------------------------------------------- #
+#
+# ``extract`` is the half of S7 that guesses: the model's output name was not
+# known when it was written, so it looks for what appeared rather than asking
+# for what it wants.  A real run answered the question, and the guess it had
+# been making was wrong in a way that reported success as failure.
+
+
+class _NestingModel:
+    """Writes what ClearerVoice writes: nested, into a directory of its own."""
+
+    def __init__(self, *, produce: bool = True) -> None:
+        self.produce = produce
+        self.dirs: list[Path] = []
+
+    def __call__(self, input_path: str, online_write: bool, output_path: str) -> None:
+        out = Path(output_path)
+        self.dirs.append(out)
+        if not self.produce:
+            return
+        stage = out / "AV_MossFormer2_TSE_16K" / Path(input_path).stem / "py_faceTracks"
+        stage.mkdir(parents=True, exist_ok=True)
+        # The track's own audio, and the model's output beside it.
+        (stage / "00000.wav").write_bytes(b"the track, not the model")
+        (stage / "est_0.wav").write_bytes(b"the separated speech")
+        (stage / "est_0.mp4").write_bytes(b"a video nobody wants")
+
+
+def _extractor(model: object) -> ClearerVoiceExtractor:
+    """The adapter with its model replaced, so nothing is downloaded."""
+
+    extractor = ClearerVoiceExtractor.__new__(ClearerVoiceExtractor)
+    extractor._model = model
+    extractor.model_name = "test"
+    extractor.device = None
+    return extractor
+
+
+def test_the_extracted_audio_is_found_however_deep_it_is(tmp_path: Path) -> None:
+    """The output is nested, and the adapter used to look only at the top.
+
+    clearvoice writes under ``<output_path>/AV_MossFormer2_TSE_16K/<name>/``, so
+    diffing the shared scratch directory found nothing the second time it ran --
+    that directory was already there from the first -- and said "the extractor
+    wrote nothing" about a model that had written everything.
+    """
+
+    source = tmp_path / "F001_0000.mp4"
+    source.write_bytes(b"a crop, for the name")
+
+    produced = _extractor(_NestingModel()).extract(source, tmp_path / "scratch")
+
+    assert produced.name == "est_0.wav"
+
+
+def test_every_call_gets_a_directory_of_its_own(tmp_path: Path) -> None:
+    """Otherwise a segment is judged against the previous one's leavings.
+
+    The same bug in different clothes: whatever the comparison is, it must not
+    have to reason about a directory that already holds output.
+    """
+
+    source = tmp_path / "F001_0000.mp4"
+    source.write_bytes(b"a crop")
+    model = _NestingModel()
+    extractor = _extractor(model)
+    scratch = tmp_path / "scratch"
+
+    extractor.extract(source, scratch)
+    extractor.extract(source, scratch)
+
+    assert len(model.dirs) == 2
+    assert model.dirs[0] != model.dirs[1]
+
+
+def test_the_track_audio_is_not_mistaken_for_the_model_output(tmp_path: Path) -> None:
+    """Guards the guard: ``00000.wav`` sits beside the answer and is not it.
+
+    Taking the first wav in the directory returns the track's *own* audio -- the
+    thing being separated rather than the separation -- and every stage after
+    this one would treat it as a successful extraction.
+    """
+
+    source = tmp_path / "F001_0000.mp4"
+    source.write_bytes(b"a crop")
+
+    produced = _extractor(_NestingModel()).extract(source, tmp_path / "scratch")
+
+    assert produced.read_bytes() == b"the separated speech"
+
+
+def test_writing_nothing_names_the_right_suspect(tmp_path: Path) -> None:
+    """The message has to point at what is actually wrong.
+
+    It used to say the adapter's naming convention was at fault, which was the
+    one thing about it that was right.
+    """
+
+    source = tmp_path / "F001_0000.mp4"
+    source.write_bytes(b"a crop")
+
+    with pytest.raises(TseError, match="wrote no est_"):
+        _extractor(_NestingModel(produce=False)).extract(source, tmp_path / "scratch")

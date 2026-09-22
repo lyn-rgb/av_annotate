@@ -25,10 +25,29 @@ first machine that has it: the produced file's name, which is why the adapter
 finds it by scanning the output directory rather than by predicting it, and
 whether ``output_path`` is taken as a directory or a file prefix.  Both are
 isolated to :meth:`ClearerVoiceExtractor.extract`.
+
+**Both are now answered by a real run.**  ``output_path`` is a directory, and the
+extractor writes *nested* under it::
+
+    <output_path>/AV_MossFormer2_TSE_16K/<input stem>/py_faceTracks/est_0.wav
+
+``est_0.wav`` is the separated speech -- 16 kHz mono, as long as the crop -- and
+it is the only file this stage wants; the videos beside it are intermediates, and
+the ``00000.wav`` beside *those* is the track's own audio rather than the model's
+output.
+
+Two other things had to be right before that run told us anything, and both were
+in the crop this adapter is handed rather than in the adapter.  The crop had no
+audio track at all -- ``crop_video`` wrote ``-an`` -- and it was one frame longer
+than the video it was cut from.  The extractor is audio-visual: the crop says
+which face, and the sound is the thing being separated.  A silent crop leaves it
+with nothing to do, and it reports that by going looking for a file it never
+wrote.
 """
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -122,17 +141,42 @@ class ClearerVoiceExtractor:
             )
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        before = {path.name for path in output_dir.iterdir()}
-        self._call(source, output_dir)
 
-        produced = sorted(
-            path for path in output_dir.iterdir() if path.name not in before
-        )
+        # A directory of its own, created empty, for this call.
+        #
+        # This used to diff the shared output directory for whatever had shown
+        # up in it.  That works exactly once, and then never again: clearvoice
+        # writes *nested*, under ``<output_path>/AV_MossFormer2_TSE_16K/<name>/``,
+        # so after one run -- successful or not -- that directory is already
+        # there, nothing new appears where the diff is looking, and every later
+        # call is reported as having written nothing at all.
+        #
+        # Which was a lie, and a misleading one: the extractor had written
+        # everything, and the message sent its reader to the model's naming
+        # convention instead of to the comparison.
+        call_dir = Path(tempfile.mkdtemp(prefix=f"{source.stem}-", dir=output_dir))
+
+        self._call(source, call_dir)
+
+        # ``est_<n>.wav`` is the extracted speech, and it is the only output
+        # this stage wants: the videos beside it are intermediates, and the
+        # ``00000.wav`` beside *those* is the track's own audio rather than the
+        # model's.  A pattern rather than a full path, because the directories
+        # in between are clearvoice's business -- it names one after the input
+        # file -- and predicting them would be predicting somebody else's
+        # layout.
+        produced = sorted(call_dir.rglob("est_*.wav"))
         if not produced:
+            wrote = sorted(
+                str(path.relative_to(call_dir))
+                for path in call_dir.rglob("*")
+                if path.is_file()
+            )
             raise TseError(
-                f"the extractor wrote nothing to {output_dir}. Its output naming "
-                "convention is not what this adapter expects; check "
-                "ClearerVoiceExtractor.extract against the installed version."
+                f"the extractor wrote no est_*.wav under {call_dir}. It wrote "
+                + (", ".join(wrote[:12]) if wrote else "nothing at all")
+                + ". ClearerVoiceExtractor.extract predicts this name from a "
+                "real run; check it against the installed version."
             )
         return produced[0]
 
