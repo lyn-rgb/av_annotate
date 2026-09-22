@@ -16,6 +16,7 @@ import pytest
 
 from avannotate import batch
 from avannotate.stages import STAGE_ORDER
+from avannotate.stages.base import StageError, StageRun
 
 
 def _video(directory: Path, name: str) -> Path:
@@ -362,3 +363,76 @@ def test_the_named_configs_all_exist() -> None:
         if name is None:
             continue
         assert (root / name).is_file(), f"{stage} names {name}, which is not in configs/"
+
+
+# --------------------------------------------------------------------------- #
+# what a watcher sees while it runs
+# --------------------------------------------------------------------------- #
+#
+# The line used to be emitted only once a stage had returned, so a stage that
+# never returned emitted nothing at all -- and a batch printing nothing while
+# working is indistinguishable from one that has stopped.  When S7 was killing
+# its worker, the corpus sat silent for minutes with nothing on screen saying
+# where it was.  Where it is, is the entire question.
+
+
+class _StubStage:
+    """A stage that reports when it was called, and what it hands back."""
+
+    def __init__(self, events: list[str], *, error: Exception | None, skipped: bool) -> None:
+        self._events = events
+        self._error = error
+        self._skipped = skipped
+
+    def run(self, context: object, *, force: bool = False) -> object:
+        self._events.append("work")
+        if self._error is not None:
+            raise self._error
+        return StageRun(stage="s0-preprocess", skipped=self._skipped, reason="test")
+
+
+def _announcements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: _StubStage
+) -> list[str]:
+    events: list[str] = []
+    stage._events = events
+
+    monkeypatch.setattr(batch, "get_stage", lambda _: stage)
+    job = batch.Job(
+        video_id="v1", source=tmp_path / "v1.mp4", work_dir=tmp_path / "work" / "v1"
+    )
+    batch.run_video(
+        job,
+        stages=("s0-preprocess",),
+        config_root=Path(__file__).resolve().parents[1] / "configs",
+        on_stage=lambda _job, _stage, event: events.append(event),
+    )
+    return events
+
+
+def test_a_stage_is_announced_before_it_does_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one that makes a hang visible.
+
+    Announcing afterwards is announcing everything except the case that
+    matters: a stage that hangs never afterwards.
+    """
+
+    events = _announcements(
+        tmp_path, monkeypatch, _StubStage([], error=StageError("never returns"), skipped=False)
+    )
+
+    assert events == ["start", "work"]
+
+
+@pytest.mark.parametrize(("skipped", "expected"), [(False, "run"), (True, "skip")])
+def test_a_finished_stage_says_which_way_it_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skipped: bool, expected: str
+) -> None:
+    events = _announcements(
+        tmp_path, monkeypatch, _StubStage([], error=None, skipped=skipped)
+    )
+
+    # "work" is the stub's own marker, standing in for the stage doing something.
+    assert events == ["start", "work", expected]

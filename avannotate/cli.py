@@ -169,17 +169,24 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     print(flush=True)
 
     started = time.monotonic()
-    stage_events: list[str] = []
 
-    def on_stage(video_id: str, stage: str, skipped: bool) -> None:
-        # One line per stage, so a batch that is stuck inside a long stage is
-        # visibly inside a long stage rather than apparently dead.
-        mark = "skip" if skipped else "run "
+    def on_stage(video_id: str, stage: str, event: str) -> None:
+        """``start`` on the way in, ``run`` or ``skip`` on the way out.
+
+        The start line is printed whether or not ``--verbose`` was asked for,
+        and that is the point of it.  It is the line that says where the batch
+        *is* -- and a batch that has stopped moving is exactly what somebody
+        watching it is watching for, so the line that would show that cannot be
+        the one behind a flag.  The completion line stays behind the flag: it
+        is detail, of which there is twelve per video.
+        """
+
         elapsed = batch_module.format_duration(time.monotonic() - started)
-        line = f"        {elapsed:>9}  {mark}  {video_id}  {stage}"
-        stage_events.append(line)
-        if args.verbose:
-            print(line, flush=True)
+        # Five characters either way, so the columns line up down the page.
+        mark = {"start": "start", "skip": "skip ", "run": "run  "}[event]
+
+        if event == "start" or args.verbose:
+            print(f"        {elapsed:>9}  {mark}  {video_id}  {stage}", flush=True)
 
     results = batch_module.run_corpus(
         jobs,
@@ -330,7 +337,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="re-run even when outputs are unchanged"
     )
     batch.add_argument(
-        "-v", "--verbose", action="store_true", help="print a line per stage, not per video"
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="also print each stage's completion, skips included",
     )
     batch.set_defaults(handler=_cmd_batch)
     return parser

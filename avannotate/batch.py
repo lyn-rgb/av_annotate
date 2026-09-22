@@ -363,6 +363,18 @@ def run_video(
             work_dir=job.work_dir,
             config=config,
         )
+        # Announced on the way *in*, not only on the way out.
+        #
+        # The line used to be emitted once the stage had returned, so a stage
+        # that never returned emitted nothing at all -- and "nothing at all" is
+        # indistinguishable from a batch that is working quietly.  When S7 was
+        # killing its worker, the corpus sat silent for minutes and the only
+        # visible fact was that nothing was happening.  *Where* it is happening
+        # is the entire question, and only a line written before the work
+        # answers it.
+        if on_stage is not None:
+            on_stage(job, stage, "start")
+
         step = time.monotonic()
         try:
             run = module.run(context, force=force)
@@ -381,7 +393,7 @@ def run_video(
             )
         )
         if on_stage is not None:
-            on_stage(job, stage, bool(run.skipped))
+            on_stage(job, stage, "skip" if run.skipped else "run")
 
     result.ok = True
     result.seconds = time.monotonic() - started
@@ -487,8 +499,10 @@ def _worker_run(payload: dict[str, object]) -> dict[str, object]:
         work_dir=Path(str(payload["work_dir"])),
     )
 
-    def announce(_job: Job, stage: str, skipped: bool) -> None:
-        _WORKER.queue.put(("stage", job.video_id, stage, skipped, time.monotonic()))
+    def announce(_job: Job, stage: str, event: str) -> None:
+        """``event`` is ``start``, ``run`` or ``skip`` -- see :func:`run_video`."""
+
+        _WORKER.queue.put(("stage", job.video_id, stage, event, time.monotonic()))
 
     result = run_video(
         job,
