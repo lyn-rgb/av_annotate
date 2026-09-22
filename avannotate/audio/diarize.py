@@ -211,7 +211,21 @@ class DiariZenDiarizer:
         return device
 
     def diarize(self, audio: Path) -> DiarizationResult:
-        result = self._pipeline(str(audio))
+        # The call is guarded, not just the constructor.  ``DiarizerError`` is
+        # documented as "could not be built *or run*", and only the build half
+        # of that was true: a crash inside DiariZen arrived at the stage as
+        # whatever pyannote happened to raise.  On a clip the clusterer cannot
+        # make sense of -- no speech to embed, so the embeddings come back
+        # degenerate -- that is a bare ``ValueError: negative dimensions are
+        # not allowed`` from deep inside VBx, naming neither the diarizer nor
+        # the file, and the stage cannot record a failure it does not recognise.
+        try:
+            result = self._pipeline(str(audio))
+        except Exception as error:  # noqa: BLE001 - see above
+            raise DiarizerError(
+                f"DiariZen failed on {Path(audio).name}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
 
         if not hasattr(result, "itertracks"):
             raise DiarizerError(

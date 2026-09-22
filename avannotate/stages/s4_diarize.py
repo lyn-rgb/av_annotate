@@ -136,6 +136,12 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
                 "device": config.device,
             }
         )
+        # Running it is inside the guard, not after it.  Building was the
+        # failure this expected to meet; running is the one that actually
+        # happens, on any clip the clusterer cannot make sense of.  The record
+        # is the point either way -- it is what makes the batch driver retry
+        # this video rather than skip it as already done.
+        raw = diarizer.diarize(audio)
     except DiarizerError as error:
         state.save(
             StageRecord(
@@ -149,7 +155,6 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
         )
         raise
 
-    raw = diarizer.diarize(audio)
     result, counts = postprocess(raw, duration=timeline.duration, config=config)
 
     turns_path = context.output(STAGE, TURNS_NAME)

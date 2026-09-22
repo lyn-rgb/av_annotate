@@ -1,10 +1,18 @@
 """Tests for stage S4.
 
-DiariZen is not installed here and cannot be, so the stage is driven by a stub
-diarizer.  What that covers is everything the stage owns: the ordering of clamp,
-merge and drop, the resume record, the summary, and the failure modes.  What it
-does not cover is the ten-line adapter that calls DiariZen, which is why that
-adapter is a separate module with its own docstring naming what to verify.
+The stage is driven by a stub diarizer throughout.  That is not a workaround
+for DiariZen being missing -- it is installed on any machine that runs S4 -- it
+is what makes these tests mean the same thing everywhere.
+
+Two of them used to rely on the package being absent, and so tested something
+else entirely on the server: they built a real pipeline, ran it on the fixture's
+sine tone, and crashed inside pyannote.  Both now force the failure they name
+rather than waiting for the machine to supply it.
+
+The adapter that calls DiariZen is covered here too, with its pipeline replaced.
+Its error wrapping is what keeps a third-party crash from reaching the stage
+unrecognised -- which is the other half of the same story, since a stage that
+does not recognise a failure records none.
 """
 
 from __future__ import annotations
@@ -15,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from avannotate.audio.diarize import DiarizerError, build_diarizer
+from avannotate.audio.diarize import DiariZenDiarizer, DiarizerError, build_diarizer
 from avannotate.audio.types import DiarizationResult, SpeakerTurn
 from avannotate.stages import s0_preprocess, s4_diarize
 from avannotate.stages.base import StageContext
@@ -197,12 +205,27 @@ def test_a_config_change_invalidates_the_cache(staged: Any) -> None:
 
 
 def test_a_diarizer_that_cannot_be_built_marks_the_stage_failed(
-    single_shot_video: Path, tmp_path: Path
+    single_shot_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The batch driver must retry it rather than skip it as done."""
+    """The batch driver must retry it rather than skip it as done.
+
+    The build is made to fail rather than relied on to.  This called
+    ``build_diarizer`` for real and counted on DiariZen being absent -- true on
+    a development box and false on the server, where it is installed because
+    the stage needs it.  There it built fine and the test went on to exercise a
+    path it never named.
+    """
 
     context = _context(single_shot_video, tmp_path, backend="diarizen")
     s0_preprocess.run(context)
+
+    def refuse(_: object) -> None:
+        raise DiarizerError(
+            "DiariZen is required for this stage. It is not on PyPI; install it "
+            "from source -- https://github.com/BUTSpeechFIT/DiariZen"
+        )
+
+    monkeypatch.setattr(s4_diarize, "build_diarizer", refuse)
 
     with pytest.raises(DiarizerError):
         s4_diarize.run(context)
@@ -211,6 +234,39 @@ def test_a_diarizer_that_cannot_be_built_marks_the_stage_failed(
     record = next(item for item in state["stages"] if item["stage"] == "s4-diarize")
     assert record["status"] == "failed"
     assert "DiariZen" in record["error"]
+
+
+def test_a_diarizer_that_fails_while_running_marks_the_stage_failed_too(
+    single_shot_video: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The half that was missing.
+
+    Only the build was guarded, so a crash while diarizing recorded nothing at
+    all -- and the record is exactly what tells the batch driver this video
+    failed rather than that it is done.
+    """
+
+    context = _context(single_shot_video, tmp_path, backend="diarizen")
+    s0_preprocess.run(context)
+
+    class Exploding:
+        name = "exploding"
+
+        def diarize(self, audio: Path) -> DiarizationResult:
+            raise DiarizerError(
+                "DiariZen failed on mix.wav: ValueError: negative dimensions are "
+                "not allowed"
+            )
+
+    monkeypatch.setattr(s4_diarize, "build_diarizer", lambda _: Exploding())
+
+    with pytest.raises(DiarizerError):
+        s4_diarize.run(context)
+
+    state = json.loads((context.work_dir / "stage_state.json").read_text())
+    record = next(item for item in state["stages"] if item["stage"] == "s4-diarize")
+    assert record["status"] == "failed"
+    assert "negative dimensions" in record["error"]
 
 
 def test_running_before_s0_is_a_clear_error(single_shot_video: Path, tmp_path: Path) -> None:
@@ -268,3 +324,100 @@ def test_there_is_no_token_to_configure() -> None:
 
     assert "huggingface_token" not in config.to_dict()
     assert "hf_secret" not in json.dumps(config.cache_key())
+
+
+# --------------------------------------------------------------------------- #
+# the adapter itself
+# --------------------------------------------------------------------------- #
+#
+# Its job is ten lines: call the pipeline, turn what comes back into
+# ``SpeakerTurn``s.  What is worth testing is not that, it is what happens when
+# the call raises -- because the failure this pipeline actually meets on real
+# audio is a crash inside pyannote, and the only thing standing between that and
+# a stage which records nothing is the wrapping below.
+
+
+class _ExplodingPipeline:
+    """A pipeline whose call raises, standing in for DiariZen on bad audio."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.seen: list[str] = []
+
+    def __call__(self, audio: str) -> object:
+        self.seen.append(audio)
+        raise self.error
+
+
+def _adapter(pipeline: object) -> DiariZenDiarizer:
+    """A diarizer with its pipeline replaced, so nothing is imported or fetched.
+
+    ``__new__`` rather than the constructor: ``__init__`` imports DiariZen and
+    downloads a checkpoint, neither of which this test is about.
+    """
+
+    diarizer = DiariZenDiarizer.__new__(DiariZenDiarizer)
+    diarizer._pipeline = pipeline
+    diarizer.model = "test"
+    diarizer.device = "backend default"
+    return diarizer
+
+
+def test_a_crash_inside_diarizen_becomes_a_diarizer_error(tmp_path: Path) -> None:
+    """The failure that actually happened, on a clip with no speech in it.
+
+    The embeddings come back degenerate and pyannote's VBx clustering dies with
+    a bare ``ValueError: negative dimensions are not allowed`` -- from a file
+    that names neither the diarizer nor the audio.  Reaching the stage as that,
+    it is not recognised as a S4 failure, so no record is written.
+    """
+
+    diarizer = _adapter(
+        _ExplodingPipeline(ValueError("negative dimensions are not allowed"))
+    )
+
+    with pytest.raises(DiarizerError, match="DiariZen failed on clip.wav"):
+        diarizer.diarize(tmp_path / "clip.wav")
+
+
+def test_the_original_error_survives_as_the_cause(tmp_path: Path) -> None:
+    """Wrapped, not swallowed -- whoever debugs this still gets the traceback.
+
+    The wrapping exists to give the stage something it can recognise.  A version
+    that dropped the cause would trade a confusing error for a missing one.
+    """
+
+    original = ValueError("negative dimensions are not allowed")
+    diarizer = _adapter(_ExplodingPipeline(original))
+
+    with pytest.raises(DiarizerError) as caught:
+        diarizer.diarize(tmp_path / "clip.wav")
+
+    assert caught.value.__cause__ is original
+
+
+def test_an_empty_result_is_not_an_error(tmp_path: Path) -> None:
+    """Guards the guard: wrapping must not turn "no speakers" into a failure.
+
+    A clip where nobody speaks is ordinary, and the stage's own answer to it --
+    zero turns, written and summarised -- is what the offscreen branch is built
+    on.  Only an exception from the pipeline is an error.
+    """
+
+    class Silent:
+        def __call__(self, audio: str) -> Any:
+            return _AnnotationStub()
+
+    diarizer = _adapter(Silent())
+    result = diarizer.diarize(tmp_path / "clip.wav")
+    assert result.turns == ()
+
+
+class _AnnotationStub:
+    """The two attributes the adapter reads off a pyannote ``Annotation``."""
+
+    def itertracks(self, yield_label: bool = False) -> tuple[()]:
+        return ()
+
+    def __len__(self) -> int:
+        return 0

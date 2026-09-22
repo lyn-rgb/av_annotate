@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 #: Frames per forward pass before the model runs out of memory.  From LoCoNet's
 #: own ablation, which puts 200 at the accuracy/memory balance and 400 over it.
@@ -143,13 +143,25 @@ def _periodic_hann(window_length: int) -> NDArray[np.float64]:
     exactly one sample of phase and VGGish is explicit about wanting this one.
     """
 
-    return 0.5 - 0.5 * np.cos(2.0 * np.pi / window_length * np.arange(window_length))
+    return np.asarray(
+        0.5 - 0.5 * np.cos(2.0 * np.pi / window_length * np.arange(window_length)),
+        dtype=np.float64,
+    )
 
 
-def _hertz_to_mel(frequencies: NDArray[np.float64]) -> NDArray[np.float64]:
-    """HTK's mel scale.  Slaney's is the other one, and torchaudio's default."""
+def _hertz_to_mel(frequencies: ArrayLike) -> NDArray[np.float64]:
+    """HTK's mel scale.  Slaney's is the other one, and torchaudio's default.
 
-    return _MEL_HIGH_FREQUENCY_Q * np.log(1.0 + frequencies / _MEL_BREAK_FREQUENCY_HZ)
+    Takes either an array of frequencies or a single one, because the band
+    edges are computed from scalars and the bin frequencies from an array, and
+    handing both through the same function is what keeps them on one scale.
+    """
+
+    values = np.asarray(frequencies, dtype=np.float64)
+    return np.asarray(
+        _MEL_HIGH_FREQUENCY_Q * np.log(1.0 + values / _MEL_BREAK_FREQUENCY_HZ),
+        dtype=np.float64,
+    )
 
 
 def _mel_matrix(
