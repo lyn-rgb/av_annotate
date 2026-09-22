@@ -23,7 +23,12 @@ from typing import Any
 
 import pytest
 
-from avannotate.audio.diarize import DiariZenDiarizer, DiarizerError, build_diarizer
+from avannotate.audio.diarize import (
+    DEFAULT_BATCH_SIZE,
+    DiariZenDiarizer,
+    DiarizerError,
+    build_diarizer,
+)
 from avannotate.audio.types import DiarizationResult, SpeakerTurn
 from avannotate.stages import s0_preprocess, s4_diarize
 from avannotate.stages.base import StageContext
@@ -343,6 +348,12 @@ class _ExplodingPipeline:
     def __init__(self, error: Exception) -> None:
         self.error = error
         self.seen: list[str] = []
+        # pyannote's own defaults, which is what they are if the adapter
+        # forgets to set them.  Starting these at DEFAULT_BATCH_SIZE instead
+        # would make "the adapter sets both" untestable: the fake would already
+        # hold the value the assertion is looking for.
+        self.embedding_batch_size = 1
+        self.segmentation_batch_size = 1
 
     def __call__(self, audio: str) -> object:
         self.seen.append(audio)
@@ -360,6 +371,7 @@ def _adapter(pipeline: object) -> DiariZenDiarizer:
     diarizer._pipeline = pipeline
     diarizer.model = "test"
     diarizer.device = "backend default"
+    diarizer.batch_size = DEFAULT_BATCH_SIZE
     return diarizer
 
 
@@ -421,3 +433,85 @@ class _AnnotationStub:
 
     def __len__(self) -> int:
         return 0
+
+
+class _MemoryPipeline:
+    """Runs out of memory until the batch size is small enough for it."""
+
+    def __init__(self, *, fits_at: int) -> None:
+        self.fits_at = fits_at
+        # 1, as pyannote leaves them -- see _ExplodingPipeline.
+        self.embedding_batch_size = 1
+        self.segmentation_batch_size = 1
+        self.sizes_seen: list[tuple[int, int]] = []
+        self.calls = 0
+
+    def __call__(self, audio: str) -> Any:
+        self.calls += 1
+        self.sizes_seen.append(
+            (self.embedding_batch_size, self.segmentation_batch_size)
+        )
+        if self.embedding_batch_size > self.fits_at:
+            raise MemoryError("batch_size ( 32) is probably too large.")
+        return _AnnotationStub()
+
+
+def test_a_card_that_cannot_hold_the_batch_gets_a_smaller_one(
+    tmp_path: Path,
+) -> None:
+    """The failure this was written for, taken from the first real run.
+
+    ``MemoryError: batch_size ( 32) is probably too large`` is pyannote's own
+    wrapper around a CUDA out-of-memory, and it failed a video in S4 for no
+    reason but the card that video happened to land on.
+    """
+
+    pipeline = _MemoryPipeline(fits_at=8)
+    diarizer = _adapter(pipeline)
+    diarizer.diarize(tmp_path / "clip.wav")
+
+    assert diarizer.batch_size == 8
+    # 32 -> 16 -> 8: two refusals, then the one that worked.
+    assert [size for size, _ in pipeline.sizes_seen] == [32, 16, 8]
+
+
+def test_the_size_that_worked_is_remembered(tmp_path: Path) -> None:
+    """A batch pays for the discovery once per worker, not once per video.
+
+    Four workers over a thousand videos would otherwise spend the first attempt
+    of every one of them finding out the same thing.
+    """
+
+    pipeline = _MemoryPipeline(fits_at=8)
+    diarizer = _adapter(pipeline)
+    diarizer.diarize(tmp_path / "one.wav")
+    settled = pipeline.calls
+    diarizer.diarize(tmp_path / "two.wav")
+
+    assert pipeline.calls == settled + 1
+    assert pipeline.sizes_seen[-1] == (8, 8)
+
+
+def test_both_batch_sizes_are_set_and_not_just_one(tmp_path: Path) -> None:
+    """pyannote keeps one behind a property and the other as a plain attribute.
+
+    Setting one and forgetting the other drops the forgotten one to its own
+    default of 1.  Nothing raises, nothing warns: the pipeline simply runs at a
+    fraction of the batch it was asked for.
+    """
+
+    pipeline = _MemoryPipeline(fits_at=DEFAULT_BATCH_SIZE)
+    _adapter(pipeline).diarize(tmp_path / "clip.wav")
+
+    assert pipeline.sizes_seen == [(DEFAULT_BATCH_SIZE, DEFAULT_BATCH_SIZE)]
+
+
+def test_running_out_at_the_floor_is_reported_as_itself(tmp_path: Path) -> None:
+    """Halving stops at one: past that, the batch size is not the problem."""
+
+    pipeline = _MemoryPipeline(fits_at=0)
+    diarizer = _adapter(pipeline)
+
+    with pytest.raises(DiarizerError, match="even at a batch size"):
+        diarizer.diarize(tmp_path / "clip.wav")
+    assert diarizer.batch_size == 1

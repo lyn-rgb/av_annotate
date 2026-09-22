@@ -119,6 +119,18 @@ def _allow_checkpoint_globals() -> None:
 #: case this pipeline is built for.
 DEFAULT_MODEL = "BUT-FIT/diarizen-wavlm-large-s80-md-v2"
 
+#: Batch size the checkpoint's own ``config.toml`` asks for.
+#:
+#: Chosen by its authors for the card they had, which was not a 24 GB one.  It
+#: is the *starting* point rather than a commitment -- see
+#: :meth:`DiariZenDiarizer._call` for what happens when it does not fit.
+DEFAULT_BATCH_SIZE = 32
+
+#: Halving stops here.  A single chunk through wavlm-large fits anywhere this
+#: pipeline can otherwise run, so failing at 1 means the problem is not the
+#: batch size and should be reported as itself.
+MIN_BATCH_SIZE = 1
+
 
 class DiarizerError(RuntimeError):
     """The diarizer could not be built or run."""
@@ -158,6 +170,7 @@ class DiariZenDiarizer:
         *,
         model: str = DEFAULT_MODEL,
         device: str | None = None,
+        batch_size: int | None = None,
     ) -> None:
         try:
             from diarizen.pipelines.inference import DiariZenPipeline
@@ -193,6 +206,9 @@ class DiariZenDiarizer:
             ) from error
 
         self.model = model
+        #: What the pipeline will be asked to use, and what it was reduced to if
+        #: that did not fit.  Starts at the checkpoint's own value.
+        self.batch_size = batch_size if batch_size is not None else DEFAULT_BATCH_SIZE
         # Recorded rather than assumed: the summary should say where the model
         # actually ran, and a silent fallback to CPU would otherwise look like a
         # device setting that simply had no effect.
@@ -210,7 +226,50 @@ class DiariZenDiarizer:
         self._pipeline.to(torch.device(device))
         return device
 
+    def _call(self, filename: str) -> Any:
+        """Run the pipeline, halving the batch size when the card runs out.
+
+        The checkpoint's ``config.toml`` asks for 32, which its authors picked
+        for the card they had and which does not fit a 24 GB one.  pyannote
+        catches the CUDA OOM and re-raises it as a ``MemoryError`` carrying that
+        same number, so the first run of this pipeline against real video failed
+        a video in S4 for no reason but the card it happened to land on::
+
+            DiariZen failed on mix.wav: MemoryError: batch_size ( 32) is
+            probably too large.
+
+        Halving rather than committing to some smaller fixed number, because
+        what fits is a property of the card *and* of whatever else is resident
+        on it, and this adapter can see neither.  The size that worked is kept,
+        so a batch pays for the discovery once per worker rather than once per
+        video -- and on a card where 32 does fit, it never pays at all.
+
+        Both fields have to be set: pyannote keeps the segmentation size behind
+        a property and the embedding size as a plain attribute, and defaults
+        each to 1, so setting one and not the other silently drops the other to
+        single-chunk inference.
+        """
+
+        while True:
+            self._pipeline.embedding_batch_size = self.batch_size
+            self._pipeline.segmentation_batch_size = self.batch_size
+            try:
+                return self._pipeline(filename)
+            except MemoryError as error:
+                if self.batch_size <= MIN_BATCH_SIZE:
+                    raise DiarizerError(
+                        f"DiariZen ran out of memory on {filename} even at a batch "
+                        f"size of {self.batch_size}. Something else is holding the "
+                        "card, or this device cannot fit the model at all."
+                    ) from error
+                self.batch_size = max(MIN_BATCH_SIZE, self.batch_size // 2)
+                print(
+                    f"   DiariZen ran out of memory on {filename}; retrying at "
+                    f"batch size {self.batch_size}"
+                )
+
     def diarize(self, audio: Path) -> DiarizationResult:
+        name = Path(audio).name
         # The call is guarded, not just the constructor.  ``DiarizerError`` is
         # documented as "could not be built *or run*", and only the build half
         # of that was true: a crash inside DiariZen arrived at the stage as
@@ -220,11 +279,12 @@ class DiariZenDiarizer:
         # not allowed`` from deep inside VBx, naming neither the diarizer nor
         # the file, and the stage cannot record a failure it does not recognise.
         try:
-            result = self._pipeline(str(audio))
+            result = self._call(str(audio))
+        except DiarizerError:
+            raise
         except Exception as error:  # noqa: BLE001 - see above
             raise DiarizerError(
-                f"DiariZen failed on {Path(audio).name}: "
-                f"{type(error).__name__}: {error}"
+                f"DiariZen failed on {name}: {type(error).__name__}: {error}"
             ) from error
 
         if not hasattr(result, "itertracks"):
@@ -248,6 +308,7 @@ class DiariZenDiarizer:
                 "backend": self.name,
                 "model": self.model,
                 "device": self.device,
+                "batch_size": self.batch_size,
             },
         )
 
@@ -261,7 +322,9 @@ def build_diarizer(config: Mapping[str, Any]) -> Diarizer:
             f"unknown diarization backend {backend!r}; the plan's choice is 'diarizen'"
         )
     device = config.get("device")
+    batch_size = config.get("batch_size")
     return DiariZenDiarizer(
         model=str(config.get("model", DEFAULT_MODEL)),
         device=str(device) if device is not None else None,
+        batch_size=int(batch_size) if batch_size is not None else None,
     )

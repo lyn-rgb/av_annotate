@@ -24,7 +24,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from avannotate.audio.diarize import DEFAULT_MODEL, DiarizerError, build_diarizer
+from avannotate.audio.diarize import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_MODEL,
+    DiarizerError,
+    build_diarizer,
+)
 from avannotate.audio.types import DiarizationResult, SpeakerTurn
 from avannotate.stages import s0_preprocess
 from avannotate.stages.base import (
@@ -34,6 +39,7 @@ from avannotate.stages.base import (
     StageRun,
     StageState,
     config_float,
+    config_int,
     config_optional_str,
     config_str,
     hash_file,
@@ -60,6 +66,11 @@ class S4Config:
     #: Turns still shorter than this after merging are noise.  Below roughly a
     #: syllable there is nothing to transcribe and nothing to extract.
     min_turn_seconds: float = 0.10
+    #: Input batch size for DiariZen.  The checkpoint's own 32 was chosen for
+    #: a much larger card and does not fit a 24 GB one; the adapter halves it
+    #: and retries when it does not, so this is a starting point rather than
+    #: a commitment.  Lower it to skip the discovery, raise it on a big card.
+    batch_size: int = DEFAULT_BATCH_SIZE
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> S4Config:
@@ -69,6 +80,7 @@ class S4Config:
             device=config_optional_str(mapping, "device"),
             merge_gap_seconds=config_float(mapping, "merge_gap_seconds", 0.20),
             min_turn_seconds=config_float(mapping, "min_turn_seconds", 0.10),
+            batch_size=config_int(mapping, "batch_size", DEFAULT_BATCH_SIZE),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -80,6 +92,7 @@ class S4Config:
             # that included it would put it in the resume record on disk.
             "merge_gap_seconds": self.merge_gap_seconds,
             "min_turn_seconds": self.min_turn_seconds,
+            "batch_size": self.batch_size,
         }
 
     def cache_key(self) -> dict[str, object]:
@@ -134,6 +147,7 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
                 "backend": config.backend,
                 "model": config.model,
                 "device": config.device,
+                "batch_size": config.batch_size,
             }
         )
         # Running it is inside the guard, not after it.  Building was the
