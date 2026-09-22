@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from avannotate.cli import is_media_file
 from avannotate.ffmpeg import FFmpegError, video_encoder
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -189,11 +190,21 @@ def video_without_audio(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="session")
 def sample_videos() -> tuple[Path, ...]:
-    """The real corpus, when it has been copied next to the repo."""
+    """The real corpus, when it has been copied next to the repo.
+
+    Filtered through the same predicate the CLI's directory scan uses, rather
+    than through a bare ``*.mp4``.  A corpus that has been near a Mac carries
+    ``._`` AppleDouble sidecars, and those end in ``.mp4``: the glob picks them
+    up, ffprobe rejects them with ``moov atom not found``, and four tests fail
+    with a message about a file nobody meant to test.  Sharing the predicate is
+    the point -- a second copy of the rule here is a second thing to keep right.
+    """
 
     if not SAMPLE_DIR.is_dir():
         pytest.skip(f"sample corpus not present at {SAMPLE_DIR}")
-    found = tuple(sorted(SAMPLE_DIR.glob("*.mp4")))
+    found = tuple(
+        sorted(path for path in SAMPLE_DIR.glob("*.mp4") if is_media_file(path))
+    )
     if not found:
         pytest.skip(f"no videos in {SAMPLE_DIR}")
     return found

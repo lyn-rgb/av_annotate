@@ -61,7 +61,12 @@ STAGE_CONFIGS: dict[str, str | None] = {
     "s11-compose": "s11.compose.json",
 }
 
-VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"})
+
+# A second ``VIDEO_SUFFIXES`` used to sit here, unused by anything.  It is gone
+# rather than left: the list it duplicates is the one that is *not* enough on
+# its own to decide whether a file is a video -- see ``cli.is_media_file`` -- and
+# a spare copy of it lying around is an invitation to write the check that
+# trusts it.
 
 
 # --------------------------------------------------------------------------- #

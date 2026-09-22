@@ -39,6 +39,11 @@
 #   build/, *.egg-info/    pip's leftovers from installing this project.
 #   .pytest_cache/ etc.    tool caches.
 #   .DS_Store              macOS folder metadata.
+#   ._*                    macOS AppleDouble sidecars.  Packed, these are worse
+#                          than clutter: a sidecar keeps the name and suffix of
+#                          the file it describes, so `._clip.mp4` is a second
+#                          "video" that ffprobe rejects -- four failing tests,
+#                          or a good video marked failed in a batch.
 #   outputs/, work/        pipeline output, not input.
 #   offline-bundle/        a transfer artifact in its own right.
 #   models/**/.lock/       ModelScope's advisory locks, meaningless elsewhere.
@@ -111,6 +116,19 @@ EXCLUDE_PARTS = {
 EXCLUDE_NAMES = {".DS_Store", "data/README.md"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".log"}
 
+# Prefixes of the files macOS writes *beside* a real one.  Deliberately not a
+# general "skip dotfiles" rule: ``.gitignore`` is dot-prefixed and is meant to
+# travel.
+#
+# ``._name`` is the AppleDouble sidecar -- copy a file onto a filesystem that
+# cannot hold extended attributes and macOS puts one next to it, holding that
+# file's attributes and none of its bytes, **keeping its name and its suffix**.
+# So ``._clip.mp4`` is named like a video, sorts beside it, and is not one.
+# Packing it hands the other machine a file whose only effect is to make ffprobe
+# report the video next to it as corrupt: that is four failing tests on the far
+# side, and on a real batch a good video marked failed.
+EXCLUDE_PREFIXES = ("._",)
+
 
 def excluded(relative: Path) -> bool:
     return any(
@@ -134,6 +152,8 @@ def carried(relative: Path) -> bool:
 def wanted(path: Path) -> bool:
     rel = path.relative_to(root)
     if excluded(rel):
+        return False
+    if path.name.startswith(EXCLUDE_PREFIXES):
         return False
     if str(rel) in EXCLUDE_NAMES or path.name in EXCLUDE_NAMES:
         return False
