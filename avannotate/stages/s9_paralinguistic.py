@@ -46,6 +46,7 @@ from pathlib import Path
 
 from avannotate.audio.wav import read_mono
 from avannotate.ffmpeg import TARGET_SAMPLE_RATE
+from avannotate.model_cache import model_for
 from avannotate.paralinguistic.model import Tagger, TaggerError, build_tagger
 from avannotate.paralinguistic.reduce import ReduceConfig, reduce_tags, unmapped_labels
 from avannotate.paralinguistic.types import DIMENSIONS, SegmentTags
@@ -240,14 +241,16 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
     segments = [SpeechSegment.from_dict(item) for item in s7_tse.load_segments(context)]
 
     try:
-        tagger = build_tagger(
+        tagger = model_for(
+            STAGE,
             {
                 "backend": config.backend,
                 "dimensions": list(config.dimensions),
                 "device": config.device,
                 "download_root": config.download_root,
                 "checkpoint": config.checkpoint,
-            }
+            },
+            build_tagger,
         )
     except TaggerError as error:
         state.save(

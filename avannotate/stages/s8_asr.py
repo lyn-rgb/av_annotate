@@ -40,6 +40,7 @@ from avannotate.asr.text import clip_to_span, hallucination_flags, join_words, o
 from avannotate.asr.types import SOURCE_MIX, SegmentSource, Transcription
 from avannotate.audio.wav import WavError
 from avannotate.ffmpeg import TARGET_SAMPLE_RATE
+from avannotate.model_cache import model_for
 from avannotate.schema import Language
 from avannotate.segment import SpeechSegment
 from avannotate.stages import s0_preprocess, s6_associate, s7_tse
@@ -302,7 +303,8 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
     )
 
     try:
-        transcriber = build_transcriber(
+        transcriber = model_for(
+            STAGE,
             {
                 "backend": config.backend,
                 "model": config.model,
@@ -312,7 +314,8 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
                 "beam_size": config.beam_size,
                 "vad_filter": config.vad_filter,
                 "condition_on_previous_text": config.condition_on_previous_text,
-            }
+            },
+            build_transcriber,
         )
     except AsrError as error:
         state.save(

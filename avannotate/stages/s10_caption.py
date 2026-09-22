@@ -40,6 +40,7 @@ from avannotate.caption.verify import check_references, flags_for
 from avannotate.faces.frames import iter_sampled_frames, read_frame
 from avannotate.faces.types import Frame
 from avannotate.ffmpeg import FFmpegError
+from avannotate.model_cache import model_for
 from avannotate.stages import s0_preprocess, s2_tracks, s3_cluster
 from avannotate.stages.base import (
     Artifact,
@@ -261,7 +262,8 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
         )
 
     try:
-        captioner = build_captioner(
+        captioner = model_for(
+            STAGE,
             {
                 "backend": config.backend,
                 "model": config.model,
@@ -270,7 +272,8 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
                 "device_map": config.device_map,
                 "max_new_tokens": config.max_new_tokens,
                 "seed": config.seed,
-            }
+            },
+            build_captioner,
         )
         captioned: list[ShotCaption] = []
         for shot in samples:

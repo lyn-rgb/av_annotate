@@ -42,6 +42,7 @@ import numpy as np
 from avannotate.audio.wav import read_info, read_window, slice_samples, write_pcm16
 from avannotate.coercion import coerce_number
 from avannotate.faces.track import Tracklet
+from avannotate.model_cache import model_for
 from avannotate.segment import SegmentationConfig
 from avannotate.stages import s0_preprocess, s2_tracks, s3_cluster, s6_associate
 from avannotate.stages.base import (
@@ -258,8 +259,10 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
     total = sum(len(segments) for segments in plan.values())
 
     try:
-        extractor = build_extractor(
-            {"backend": config.backend, "model": config.model, "device": config.device}
+        extractor = model_for(
+            STAGE,
+            {"backend": config.backend, "model": config.model, "device": config.device},
+            build_extractor,
         )
     except TseError as error:
         state.save(

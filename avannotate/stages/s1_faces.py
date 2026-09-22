@@ -46,6 +46,7 @@ from avannotate.coercion import coerce_number
 from avannotate.faces.detect import Detector, DetectorError, build_detector
 from avannotate.faces.frames import FrameSampling, iter_frames
 from avannotate.faces.types import Detection, FrameDetections
+from avannotate.model_cache import model_for
 from avannotate.stages import s0_preprocess
 from avannotate.stages.base import (
     Artifact,
@@ -282,7 +283,11 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
     timeline = s0_preprocess.load_timeline(context)
 
     try:
-        detector = build_detector(config.detector_config())
+        detector = model_for(
+            STAGE,
+            config.detector_config(),
+            build_detector,
+        )
     except DetectorError as error:
         state.save(
             StageRecord(

@@ -43,6 +43,7 @@ from avannotate.asd.window import (
 )
 from avannotate.faces.frames import iter_gray_window
 from avannotate.faces.track import Tracklet
+from avannotate.model_cache import model_for
 from avannotate.stages import s0_preprocess, s2_tracks
 from avannotate.stages.base import (
     Artifact,
@@ -205,13 +206,15 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
         model_name = "none"
     else:
         try:
-            model = build_asd_model(
+            model = model_for(
+                STAGE,
                 {
                     "backend": config.backend,
                     "checkpoint": config.checkpoint,
                     "repo": config.repo,
                     "device": config.device,
-                }
+                },
+                build_asd_model,
             )
         except AsdError as error:
             state.save(

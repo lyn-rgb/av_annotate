@@ -31,6 +31,7 @@ from avannotate.audio.diarize import (
     build_diarizer,
 )
 from avannotate.audio.types import DiarizationResult, SpeakerTurn
+from avannotate.model_cache import model_for
 from avannotate.stages import s0_preprocess
 from avannotate.stages.base import (
     Artifact,
@@ -142,13 +143,15 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
     audio = s0_preprocess.audio_path(context)
 
     try:
-        diarizer = build_diarizer(
+        diarizer = model_for(
+            STAGE,
             {
                 "backend": config.backend,
                 "model": config.model,
                 "device": config.device,
                 "batch_size": config.batch_size,
-            }
+            },
+            build_diarizer,
         )
         # Running it is inside the guard, not after it.  Building was the
         # failure this expected to meet; running is the one that actually

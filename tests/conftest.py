@@ -23,11 +23,34 @@ from pathlib import Path
 
 import pytest
 
+from avannotate import model_cache
 from avannotate.cli import is_media_file
 from avannotate.ffmpeg import FFmpegError, video_encoder
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DIR = REPO_ROOT / "data" / "examples"
+
+
+@pytest.fixture(autouse=True)
+def _empty_model_cache() -> Iterator[None]:
+    """Start every test with nothing in ``avannotate.model_cache``.
+
+    The cache is process-global by design -- it holds one model per stage for
+    as long as the process runs one stage's worth of work -- and a pytest
+    process is not that.  It runs hundreds of tests, most of which substitute a
+    fake ``build_*`` for a stage and call ``run()``; the key is (stage, config),
+    so without this the second test to run a given stage is handed the first
+    test's model and asserts against a fake it never installed.  The failures
+    are order-dependent and look nothing like a cache: ``test_s5_asd`` passes,
+    ``test_s6_associate`` passes, and running the two files together fails nine
+    tests in the second one.
+
+    Releasing here rather than in the cache gives each test the scope a real
+    invocation has, which is what the tests are written against.
+    """
+
+    model_cache.release()
+    yield
 
 
 class _Absent:
