@@ -339,6 +339,32 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if argv is None:
+        # Our arguments are ours, and this is where they stop being visible.
+        #
+        # A library that calls ``parser.parse_args()`` with no argument list
+        # reads ``sys.argv[1:]`` -- that is argparse's documented default, not
+        # an accident -- and so reads *ours*, then exits 2 on the first one it
+        # does not recognise.  ClearerVoice's AV model is built on TalkNet,
+        # whose inference code parses its own arguments exactly that way, so S7
+        # died inside the model with:
+        #
+        #     usage: cli.py [-h] [--nDataLoaderThread ...] [--cropScale ...]
+        #     cli.py: error: unrecognized arguments: batch --input ... --output ...
+        #
+        # ``argparse.error`` exits with 2, and ``SystemExit`` is a
+        # ``BaseException``: ``multiprocessing.Pool``'s worker loop catches
+        # ``Exception``, so it does not catch this, the worker process dies, and
+        # the parent blocks forever on a result that is never coming.  A hang,
+        # from a library reading arguments that were never about it.
+        #
+        # ``argv[:0]`` and not ``[]``: ``sys.argv[0]`` is the program's own name
+        # and several libraries read it for a log prefix.  Only the real command
+        # line is touched -- a caller passing a list is passing it on purpose,
+        # and the test suite does exactly that with the runner's own argv.
+        sys.argv = sys.argv[:1]
+
     handler = getattr(args, "handler", None)
     if handler is None:
         parser.print_help()

@@ -9,10 +9,12 @@ original's suffix and none of its bytes.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
+from avannotate import cli
 from avannotate.cli import _read_inputs, is_media_file
 
 #: What a real sidecar starts with.  Not valid video of any kind.
@@ -76,3 +78,58 @@ def test_naming_a_sidecar_explicitly_still_opens_it(tmp_path: Path) -> None:
     sidecar.write_bytes(_APPLEDOUBLE)
 
     assert _read_inputs(str(sidecar), base=tmp_path) == [sidecar.resolve()]
+
+
+# --------------------------------------------------------------------------- #
+# whose arguments they are
+# --------------------------------------------------------------------------- #
+
+
+def test_the_arguments_are_gone_before_the_handler_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A library calling ``parse_args()`` with no list reads ``sys.argv[1:]``.
+
+    That is argparse's documented default, not an accident, and it is how S7
+    died: ClearerVoice's AV model is built on TalkNet, whose inference code
+    parses its own arguments that way, so it read our ``batch --input ...`` and
+    exited 2.  ``SystemExit`` is a ``BaseException``, so ``multiprocessing``'s
+    worker loop does not catch it -- the worker died and the batch hung on a
+    result that was never coming.
+    """
+
+    seen: list[list[str]] = []
+
+    def spy(value: str, *, base: Path) -> list[Path]:
+        seen.append(list(sys.argv))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "_read_inputs", spy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cli.py", "run", "--stage", "s0-preprocess", "--input", "x", "--output", "y"],
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    # Truncated, not emptied: argv[0] is the program's own name.
+    assert seen == [["cli.py"]]
+
+
+def test_a_caller_passing_a_list_does_not_touch_the_runners_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards the guard, in the direction that would break the test suite.
+
+    Every test calls ``main([...])`` with an explicit list, and pytest's own
+    ``sys.argv`` is the runner's -- truncating it here would edit the arguments
+    of the process running the tests.
+    """
+
+    monkeypatch.setattr(sys, "argv", ["pytest", "-q", "tests/test_cli.py"])
+
+    cli.main(["stages"])
+
+    assert sys.argv == ["pytest", "-q", "tests/test_cli.py"]
