@@ -44,6 +44,19 @@ export HF_HOME="${HF_HOME:-$ROOT/models/hf}"
 export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-$ROOT/models/modelscope}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
+# torch's hub cache, which holds the seeded VGGish weights.  Under the checkout
+# for the same reason as the two above -- a cluster's $HOME is on a quota and
+# its /tmp is on the node's own disk, and neither is where a checkout that
+# already has a models/ directory should be reaching.
+#
+# This one is load-bearing in a way the others are not.  setup_venv.sh seeds
+# ``vggish-10086976.pth`` into whatever TORCH_HOME says, so if this disagreed
+# with that, the seed would land somewhere S5 never looks -- and S5 does not
+# degrade when it cannot find it, it asks torch.hub to download 275 MB from
+# GitHub.  On a server that cannot reach GitHub that is a hard failure, and the
+# weights it was fetching are ones the LoCoNet checkpoint overwrites anyway.
+export TORCH_HOME="${TORCH_HOME:-$ROOT/models/torch}"
+
 # HF_HUB_OFFLINE is deliberately NOT set here.  It is what makes a cached
 # checkpoint resolve without asking the network, so on a server with no route to
 # huggingface.co it is required -- but it also turns every miss into a hard

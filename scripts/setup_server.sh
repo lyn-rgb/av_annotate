@@ -35,6 +35,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib.sh
 source "$ROOT/scripts/lib.sh"
 MODELS="$ROOT/models"
+# Where torch's hub cache lives, which is where the VGGish seed below goes.
+# Exported rather than expanded at the point of use: that step is a heredoc
+# python reading TORCH_HOME from its own environment, and the value has to be
+# the one run_batch.sh will look in.  Two defaults that merely happen to agree
+# is the shape of the bug this is here to avoid -- they disagreed, and S5
+# quietly asked GitHub for 275 MB it cannot reach.
+export TORCH_HOME="${TORCH_HOME:-$MODELS/torch}"
 STAGES="all"
 FETCH_WEIGHTS=1
 BUNDLE=""
@@ -273,7 +280,7 @@ if wants s5-asd; then
     # already inside the checkpoint under "audioEncoder", key for key, so the
     # cache can be filled from it instead.  20 MB of local copying against a
     # 275 MB download that some servers cannot make at all.
-    VGGISH_CACHE="${TORCH_HOME:-$HOME/.cache/torch}/hub/checkpoints/vggish-10086976.pth"
+    VGGISH_CACHE="$TORCH_HOME/hub/checkpoints/vggish-10086976.pth"
     if [[ -f "$VGGISH_CACHE" ]]; then
         note "torch's VGGish cache is already seeded"
     elif [[ -n "$BUNDLE" && -f "$BUNDLE/models/vggish-10086976.pth" ]]; then
@@ -293,8 +300,10 @@ if not audio:
         "no audioEncoder weights in the checkpoint; the VGGish cache cannot be "
         "seeded from it and the 275 MB download will happen on first use"
     )
+# No fallback: this script exports TORCH_HOME, so a second default here would
+# be a second thing to keep in agreement with run_batch.sh.
 target = os.path.join(
-    os.environ.get("TORCH_HOME") or os.path.expanduser("~/.cache/torch"),
+    os.environ["TORCH_HOME"],
     "hub", "checkpoints", "vggish-10086976.pth",
 )
 os.makedirs(os.path.dirname(target), exist_ok=True)

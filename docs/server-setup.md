@@ -56,13 +56,29 @@ export HF_HOME=/path/to/models/hf
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-**`run_batch.sh` sets `HF_HOME`, `MODELSCOPE_CACHE` and `HF_ENDPOINT` itself**,
-pointing at the checkout's `models/`, so a run finds what `download_models.sh`
-put there without any exporting. All three still respect an existing value.
-That matters more than it looks: the configs name their checkpoints by repo id,
-so with the cache in the wrong place `huggingface_hub` looks in
-`~/.cache/huggingface`, finds nothing, and either fails or fetches all 26 GB a
-second time.
+**`run_batch.sh` sets `HF_HOME`, `MODELSCOPE_CACHE`, `TORCH_HOME` and
+`HF_ENDPOINT` itself**, pointing at the checkout's `models/`, so a run finds
+what `download_models.sh` put there without any exporting. All of them still
+respect an existing value. That matters more than it looks: the configs name
+their checkpoints by repo id, so with the cache in the wrong place
+`huggingface_hub` looks in `~/.cache/huggingface`, finds nothing, and either
+fails or fetches all 26 GB a second time.
+
+**None of the four defaults to `$HOME` or `/tmp`**, and that is deliberate. On
+a cluster the home directory is usually on a quota and `/tmp` is on the node's
+own disk, so a cache placed there is either too small for a 64 GB model set or
+gone at the next reboot. Everything the pipeline chooses for itself lives under
+the checkout. The one path it does not choose is the output directory — which
+is why `--output` has no default and is required: name one on the same
+persistent volume as the checkout.
+
+`TORCH_HOME` is the newest of the four and the easiest to get wrong, because a
+mismatch there fails rather than degrades. It holds the seeded VGGish weights
+(`scripts/seed_vggish.py`). If `setup_venv.sh` and `run_batch.sh` disagreed
+about where that is, S5 would not fall back to anything — the `torchvggish`
+constructor asks `torch.hub` to download 275 MB from a GitHub release, which a
+server with no route there cannot do. Those weights are ones LoCoNet's own
+checkpoint overwrites immediately, which is the entire reason the seed exists.
 
 **On a machine with no route to huggingface.co, one more is needed:**
 

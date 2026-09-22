@@ -504,7 +504,13 @@ say "torch's VGGish cache"
 # which is what it is for, since the thing it replaces is a snippet people
 # paste, and a pasted snippet resolves its paths against whatever directory
 # they were standing in.  This one resolves against the checkout.
-"$PY" "$ROOT/scripts/seed_vggish.py" \
+# TORCH_HOME is named here, and run_batch.sh names the same path, because the
+# seed is only worth anything where the run will look for it.  Left to the
+# default this would land in ~/.cache/torch while a batch looked in the
+# checkout, and S5 would then ask torch.hub to fetch 275 MB from GitHub -- on a
+# server with no route there, a hard failure.
+TORCH_HOME="${TORCH_HOME:-$ROOT/models/torch}" \
+    "$PY" "$ROOT/scripts/seed_vggish.py" \
     || warn "could not seed the VGGish cache; S5 will try a 275 MB download"
 
 # --------------------------------------------------------------------------- #

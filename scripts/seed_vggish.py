@@ -45,9 +45,19 @@ def checkpoint_path() -> Path:
 
 
 def cache_path() -> Path:
-    """Where torch's hub looks, honouring TORCH_HOME the way torch does."""
+    """Where torch's hub looks, honouring TORCH_HOME the way torch does.
+
+    The fallback is the checkout's own ``models/torch`` rather than torch's
+    ``~/.cache/torch``, and that is not cosmetic: ``run_batch.sh`` points
+    TORCH_HOME there, so a seed written to ``$HOME`` would be one S5 never
+    looks at -- and S5 does not degrade when it cannot find the cache, it asks
+    torch.hub to download 275 MB from GitHub, which a server with no route
+    there cannot do.  Every other path in this script is already relative to
+    :func:`repo_root` for the same reason; this one was the exception.
+    """
+
     home = os.environ.get("TORCH_HOME")
-    base = Path(home) if home else Path.home() / ".cache" / "torch"
+    base = Path(home) if home else repo_root() / "models" / "torch"
     return base / "hub" / "checkpoints" / CACHE_FILENAME
 
 
