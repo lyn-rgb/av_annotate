@@ -21,9 +21,12 @@
 #     seed written before that change sits in $HOME and is invisible.  Its
 #     absence is not a slow start: the fallback is a 275 MB fetch from GitHub,
 #     which a server like this one cannot make
+#   * the S3FD weights ClearerVoice fetches from Google Drive, which are
+#     inside the installed package rather than under models/ and which S7
+#     reports much later as a file that is simply not there
 #   * a stage whose dependencies this machine no longer satisfies
 #
-# It fixes the first two where it can and then hands the arguments to
+# It fixes the first three where it can and then hands the arguments to
 # run_batch.sh, so it is a drop-in for it.
 #
 # What it does NOT need to do is clean up after a run the reboot interrupted.
@@ -68,6 +71,22 @@ else
     "$PYTHON" "$ROOT/scripts/seed_vggish.py" \
         || die "could not seed it -- S5 would try a 275 MB download from GitHub"
 fi
+
+# --------------------------------------------------------------------------- #
+# the S3FD weights ClearerVoice fetches from Google Drive
+# --------------------------------------------------------------------------- #
+#
+# Inside the installed package rather than under models/, and fetched by
+# clearvoice's own code on first use -- via gdown, from a Drive link, with the
+# return value thrown away.  All three of those fail here and fail silently, and
+# S7 reports it much later as a file that is not there.
+#
+# A warning rather than a stop: it is S7's alone, the fetch needs the network,
+# and blocking S0 through S6 on it would be the wrong trade.  The warning names
+# the consequence so that it is not the silent failure it used to be.
+
+"$PYTHON" "$ROOT/scripts/fetch_s3fd.py" \
+    || warn "S3FD weights are missing and could not be fetched -- S7 will fail on them"
 
 # --------------------------------------------------------------------------- #
 # can this machine run the stages at all
