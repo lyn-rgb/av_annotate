@@ -133,3 +133,67 @@ def test_a_caller_passing_a_list_does_not_touch_the_runners_argv(
     cli.main(["stages"])
 
     assert sys.argv == ["pytest", "-q", "tests/test_cli.py"]
+
+
+# --------------------------------------------------------------------------- #
+# what a batch prints
+# --------------------------------------------------------------------------- #
+
+
+def _stub_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace the pool, and the GPU probe, with something that returns at once.
+
+    What is under test is which callbacks ``_cmd_batch`` wires up, so this
+    drives them the way ``run_corpus`` would and asserts on what came out.
+    """
+
+    from avannotate import batch as batch_module
+
+    def run_corpus(jobs: object, **kwargs: object) -> list[object]:
+        on_stage = kwargs.get("on_stage")
+        on_done = kwargs.get("on_done")
+        for job in jobs:  # type: ignore[union-attr]
+            if callable(on_stage):
+                on_stage(job.video_id, "s0-preprocess", "start")
+                on_stage(job.video_id, "s0-preprocess", "run")
+            if callable(on_done):
+                on_done(True)
+        return []
+
+    monkeypatch.setattr(batch_module, "run_corpus", run_corpus)
+    monkeypatch.setattr(batch_module, "detect_gpus", lambda: ())
+
+
+def _batch_args(tmp_path: Path, *extra: str) -> object:
+    (tmp_path / "clip.mp4").write_bytes(b"\x00")
+    listing = tmp_path / "list.txt"
+    listing.write_text("clip.mp4\n", encoding="utf-8")
+    return cli.build_parser().parse_args(
+        ["batch", "--input", str(listing), "--output", str(tmp_path / "out"), *extra]
+    )
+
+
+def test_a_batch_does_not_print_a_line_per_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two thousand lines per stage was the complaint; the bar replaces them."""
+
+    _stub_corpus(monkeypatch)
+
+    assert cli._cmd_batch(_batch_args(tmp_path)) == 0  # type: ignore[arg-type]
+
+    assert "start" not in capsys.readouterr().out
+
+
+def test_verbose_brings_the_lines_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The escape hatch.  A stalled bar says *that* it stopped, not *where*."""
+
+    _stub_corpus(monkeypatch)
+
+    assert cli._cmd_batch(_batch_args(tmp_path, "--verbose")) == 0  # type: ignore[arg-type]
+
+    out = capsys.readouterr().out
+    assert "start" in out
+    assert "s0-preprocess" in out

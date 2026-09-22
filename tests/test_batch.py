@@ -10,7 +10,11 @@ one, and two videos sharing a stem share a work directory.
 from __future__ import annotations
 
 import json
+import multiprocessing
+import queue
 import threading
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -582,3 +586,183 @@ def test_a_complete_answer_is_left_alone() -> None:
     # Reordered to the job list, and nothing added.
     assert [item.video_id for item in accounted] == ["v1", "v2"]
     assert all(item.ok for item in accounted)
+
+
+# --------------------------------------------------------------------------- #
+# what a watcher sees while it runs
+# --------------------------------------------------------------------------- #
+
+
+class _FakeQueue:
+    """A progress queue with nothing on it.
+
+    Nothing here produces stage events: what is under test is the per-video
+    reporting, not the stage lines.  The real ``get`` blocks for its timeout,
+    and a fake that returned at once would spin the reader thread.
+    """
+
+    def get(self, timeout: float | None = None) -> tuple[object, ...]:
+        time.sleep(0.001)
+        raise queue.Empty
+
+
+class _FakePool:
+    """The four things ``run_corpus`` asks of a pool."""
+
+    def __init__(self, payloads: list[dict[str, object]]) -> None:
+        self._payloads = payloads
+        self.terminated = False
+
+    def imap_unordered(self, function: object, items: object) -> Iterator[dict[str, object]]:
+        return iter(self._payloads)
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def join(self) -> None:
+        pass
+
+
+class _FakeContext:
+    """Enough of a multiprocessing context to drive ``run_corpus``.
+
+    A real pool is what the suite cannot use.  On macOS the spawn start method
+    re-imports the test runner in the child, so a test that starts one hangs
+    instead of failing -- which is why nothing above this line calls
+    ``run_corpus`` at all, and why the reporting it does had no test until the
+    progress bar gave it one.
+    """
+
+    def __init__(self, pool: _FakePool) -> None:
+        self._pool = pool
+
+    def Queue(self) -> _FakeQueue:
+        return _FakeQueue()
+
+    def Value(self, kind: str, initial: object) -> object:
+        return initial
+
+    def Lock(self) -> object:
+        return None
+
+    def Pool(self, **kwargs: object) -> _FakePool:
+        return self._pool
+
+
+def _payload(
+    video_id: str, *, ok: bool = True, stage: str = "", error: str = ""
+) -> dict[str, object]:
+    return {
+        "video_id": video_id,
+        "ok": ok,
+        "seconds": 1.5,
+        "failed_stage": stage,
+        "error": error,
+        "stages": {},
+    }
+
+
+def _corpus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payloads: list[dict[str, object]],
+    *,
+    watching: bool = True,
+) -> tuple[list[str], list[bool]]:
+    """Run ``run_corpus`` over a fake pool; return the lines and the callbacks.
+
+    ``watching`` is whether the caller wants the per-video callback -- the
+    progress bar -- instead of a line per video.
+
+    The "note:" line about the pool's workers is filtered out.  The fake pool
+    deliberately has no ``_pool``, which is the branch that prints it, and it
+    is noise in every assertion below.
+    """
+
+    pool = _FakePool(payloads)
+    monkeypatch.setattr(multiprocessing, "get_context", lambda name: _FakeContext(pool))
+
+    jobs = tuple(
+        batch.Job(
+            video_id=str(item["video_id"]),
+            source=tmp_path / f"{item['video_id']}.mp4",
+            work_dir=tmp_path / "out" / "work" / str(item["video_id"]),
+        )
+        for item in payloads
+    )
+
+    lines: list[str] = []
+    watched: list[bool] = []
+
+    def on_line(line: str) -> None:
+        if not line.lstrip().startswith("note:"):
+            lines.append(line)
+
+    batch.run_corpus(
+        jobs,
+        stages=("s0-preprocess",),
+        config_root=tmp_path,
+        on_line=on_line,
+        on_done=watched.append if watching else None,
+    )
+    return lines, watched
+
+
+def test_every_video_gets_a_line_when_nothing_else_is_watching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines, watched = _corpus(
+        tmp_path, monkeypatch, [_payload("a"), _payload("b"), _payload("c")],
+        watching=False,
+    )
+
+    assert len(lines) == 3
+    for line, video_id in zip(lines, ("a", "b", "c"), strict=True):
+        assert video_id in line
+    assert watched == []
+
+
+def test_nothing_is_written_per_video_when_something_is_watching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The thousand-line log this exists to replace."""
+
+    lines, watched = _corpus(
+        tmp_path, monkeypatch, [_payload("a"), _payload("b"), _payload("c")]
+    )
+
+    assert lines == [], "the bar is the progress; the lines are the pile"
+    assert watched == [True, True, True]
+
+
+def test_a_failure_gets_a_line_even_when_something_is_watching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bar says how many failed; only a line says which and why."""
+
+    lines, watched = _corpus(
+        tmp_path,
+        monkeypatch,
+        [
+            _payload("a"),
+            _payload("b", ok=False, stage="s3-cluster", error="no checkpoint"),
+            _payload("c"),
+        ],
+    )
+
+    assert len(lines) == 1
+    assert "b" in lines[0]
+    assert "no checkpoint" in lines[0]
+    # And the bar still counted it: a failure is progress too.
+    assert watched == [True, False, True]
+
+
+def test_the_bar_advances_once_per_video_whatever_the_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines, watched = _corpus(
+        tmp_path, monkeypatch, [_payload("a", ok=False), _payload("b", ok=False)]
+    )
+
+    assert watched == [False, False]
+    assert len(lines) == 2, "two failures, two lines"

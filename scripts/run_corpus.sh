@@ -12,6 +12,7 @@
 #   --gpus LIST      comma-separated device indices (default: detect them)
 #   --workers N      videos at once (default: one per GPU, or 1 with none)
 #   --force          re-run each stage even where its outputs are current
+#   --verbose        a line per video per stage, instead of the progress bar
 #   --dry-run        print the plan and stop
 #
 # `run_batch.sh` runs a video end to end, then the next video.  This runs S1
@@ -58,6 +59,7 @@ FROM=""
 GPUS=""
 WORKERS=""
 FORCE=0
+VERBOSE=0
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -70,8 +72,9 @@ while [[ $# -gt 0 ]]; do
         --gpus) GPUS="$2"; shift 2 ;;
         --workers) WORKERS="$2"; shift 2 ;;
         --force) FORCE=1; shift ;;
+        --verbose|-v) VERBOSE=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
-        -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -151,6 +154,7 @@ for i in "${!plan[@]}"; do
     [[ -n "$GPUS" ]] && args+=(--gpus "$GPUS")
     [[ -n "$WORKERS" ]] && args+=(--workers "$WORKERS")
     (( FORCE )) && args+=(--force)
+    (( VERBOSE )) && args+=(--verbose)
 
     started=$(date +%s)
     # tee: live to the terminal, kept in the per-stage log.  `set +e` because a

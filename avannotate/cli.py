@@ -12,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 
+from avannotate import progress as progress_module
 from avannotate import requirements
 from avannotate.stages import STAGE_ORDER, available_stages, get_stage
 from avannotate.stages.base import StageContext, StageError, load_config_file
@@ -170,33 +171,64 @@ def _cmd_batch(args: argparse.Namespace) -> int:
 
     started = time.monotonic()
 
+    # One stage is the case this is built for -- the driver runs a stage at a
+    # time -- and there the bar is that stage's progress.  With several, a
+    # video is finished when its *last* stage is, so the count is videos.
+    progress = (
+        None
+        if args.verbose
+        else progress_module.Progress(
+            title=stages[0] if len(stages) == 1 else "videos",
+            total=len(jobs),
+            lines=sys.stdout,
+            bar_stream=progress_module.open_terminal(),
+        )
+    )
+
+    def on_line(line: str) -> None:
+        if progress is not None:
+            progress.clear()
+        print(line, flush=True)
+
     def on_stage(video_id: str, stage: str, event: str) -> None:
         """``start`` on the way in, ``run`` or ``skip`` on the way out.
 
-        The start line is printed whether or not ``--verbose`` was asked for,
-        and that is the point of it.  It is the line that says where the batch
-        *is* -- and a batch that has stopped moving is exactly what somebody
-        watching it is watching for, so the line that would show that cannot be
-        the one behind a flag.  The completion line stays behind the flag: it
-        is detail, of which there is twelve per video.
+        The start line used to be printed whether or not ``--verbose`` was
+        asked for, and that was the point of it: it says where the batch *is*,
+        and a batch that has stopped moving is exactly what somebody watching
+        it is watching for.  The bar says the same thing in one line instead of
+        two thousand -- a stalled bar is a stalled batch -- so the lines are
+        now what ``--verbose`` is for, and there is one of these per stage per
+        video when you ask for them.
         """
 
-        elapsed = batch_module.format_duration(time.monotonic() - started)
+        if not args.verbose:
+            return
+
+        elapsed = progress_module.format_duration(time.monotonic() - started)
         # Five characters either way, so the columns line up down the page.
         mark = {"start": "start", "skip": "skip ", "run": "run  "}[event]
+        print(f"        {elapsed:>9}  {mark}  {video_id}  {stage}", flush=True)
 
-        if event == "start" or args.verbose:
-            print(f"        {elapsed:>9}  {mark}  {video_id}  {stage}", flush=True)
+    def on_done(ok: bool) -> None:
+        if progress is not None:
+            progress.advance(ok=ok)
 
-    results = batch_module.run_corpus(
-        jobs,
-        stages=stages,
-        config_root=config_root,
-        workers=workers,
-        gpus=tuple(devices),
-        force=args.force,
-        on_stage=on_stage,
-    )
+    try:
+        results = batch_module.run_corpus(
+            jobs,
+            stages=stages,
+            config_root=config_root,
+            workers=workers,
+            gpus=tuple(devices),
+            force=args.force,
+            on_line=on_line,
+            on_stage=on_stage,
+            on_done=on_done,
+        )
+    finally:
+        if progress is not None:
+            progress.close()
 
     index_path = output / "index.jsonl"
     failures_path = output / "failures.jsonl"
@@ -207,7 +239,7 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     summary = batch_module.summarise(results)
     print()
     print(f"videos   {summary['succeeded']} ok, {summary['failed']} failed")
-    print(f"time     {batch_module.format_duration(time.monotonic() - started)}")
+    print(f"time     {progress_module.format_duration(time.monotonic() - started)}")
     slowest = str(summary["slowest_stage"])
     if slowest:
         per_stage = summary["seconds_per_stage"]

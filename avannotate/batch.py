@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from avannotate.progress import format_duration
 from avannotate.stages import STAGE_ORDER, get_stage
 from avannotate.stages.base import StageContext, StageError, load_config_file
 
@@ -250,19 +251,6 @@ def plan_workers(
 # --------------------------------------------------------------------------- #
 # progress
 # --------------------------------------------------------------------------- #
-
-
-def format_duration(seconds: float) -> str:
-    """``1h 04m 09s``, or ``4m 09s``, or ``9s`` -- whichever fits."""
-
-    total = int(round(seconds))
-    hours, rest = divmod(total, 3600)
-    minutes, secs = divmod(rest, 60)
-    if hours:
-        return f"{hours}h {minutes:02d}m {secs:02d}s"
-    if minutes:
-        return f"{minutes}m {secs:02d}s"
-    return f"{secs}s"
 
 
 def format_progress(
@@ -620,6 +608,7 @@ def run_corpus(
     force: bool = False,
     on_line: Any = None,
     on_stage: Any = None,
+    on_done: Any = None,
 ) -> list[VideoResult]:
     """Every video, ``workers`` at a time, reporting as they finish.
 
@@ -627,6 +616,11 @@ def run_corpus(
     appears while the batch is working rather than in a burst after the next
     video ends.  A batch of a thousand videos is watched for hours; output that
     only moves between videos reads as a hang.
+
+    ``on_done(ok)`` is called once per finished video, and is how a caller
+    replaces the per-video line with something else -- a bar, a counter, a
+    notification.  When it is given, only failures still get a line: the bar
+    says how many, and only a line can say which video and why.
     """
 
     import threading
@@ -722,17 +716,23 @@ def run_corpus(
                 if ok
                 else f"{payload['failed_stage']}: {_clip(str(payload['error']))}"
             )
-            emit(
-                format_progress(
-                    done=seen,
-                    total=total,
-                    job=job,
-                    ok=ok,
-                    seconds=seconds,
-                    detail=detail,
-                    elapsed=time.monotonic() - started,
+            # Failures get their line first, then the bar is redrawn over
+            # nothing -- the other order leaves the line erased and the bar
+            # gone until the next video ends.
+            if not ok or on_done is None:
+                emit(
+                    format_progress(
+                        done=seen,
+                        total=total,
+                        job=job,
+                        ok=ok,
+                        seconds=seconds,
+                        detail=detail,
+                        elapsed=time.monotonic() - started,
+                    )
                 )
-            )
+            if on_done is not None:
+                on_done(ok)
             results.append(_rebuild(payload))
     finally:
         stop.set()
