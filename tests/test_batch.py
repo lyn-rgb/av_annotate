@@ -10,7 +10,9 @@ one, and two videos sharing a stem share a work directory.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -436,3 +438,147 @@ def test_a_finished_stage_says_which_way_it_went(
 
     # "work" is the stub's own marker, standing in for the stage doing something.
     assert events == ["start", "work", expected]
+
+
+# --------------------------------------------------------------------------- #
+# a worker that dies
+# --------------------------------------------------------------------------- #
+#
+# The failure this exists for: ``Pool`` does not notice a worker dying.  The
+# task it was running never returns and the parent blocks on a result that will
+# never arrive -- not an error, only silence, so a batch that should have
+# reported a failure sits all night instead.  It is not hypothetical: it
+# happened here, when a library called ``sys.exit`` inside a worker.
+#
+# The pool below is a stand-in.  What the watchdog reads is ``is_alive()``,
+# which is the operating system's answer about a process rather than this
+# module's logic, and a real ``Pool`` cannot be started under pytest at all on a
+# platform whose start method is spawn -- the child re-imports the test runner.
+# What is worth pinning is what this module does with the answer.
+
+
+class _Worker:
+    def __init__(self, pid: int, *, alive: bool) -> None:
+        self.pid = pid
+        self._alive = alive
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
+class _Pool:
+    """The only two things ``watch_workers`` touches."""
+
+    def __init__(self, *workers: _Worker) -> None:
+        self._pool = list(workers)
+        self.terminated = False
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+
+def _watch(pool: _Pool, *, deadline: float = 2.0) -> list[tuple[Any, ...]]:
+    """Run the watchdog with a deadline and report what it declared dead.
+
+    The deadline is load-bearing.  ``watch_workers`` returns when it has stopped
+    the pool *or* when it is told to stop, so a fresh never-set ``Event`` makes a
+    broken watchdog loop forever -- the test hangs instead of failing, which is
+    the one outcome worse than a red test.  Two seconds is far longer than the
+    ten-millisecond poll needs and far shorter than anyone's patience.
+    """
+
+    stop = threading.Event()
+    threading.Timer(deadline, stop.set).start()
+    seen: list[tuple[Any, ...]] = []
+    batch.watch_workers(pool, stop=stop, seconds=0.01, on_dead=seen.append)
+    return seen
+
+
+def test_a_dead_worker_stops_the_pool() -> None:
+    pool = _Pool(_Worker(11, alive=True), _Worker(12, alive=False))
+
+    seen = _watch(pool)
+
+    assert seen, "the watchdog never noticed a worker that is gone"
+    assert [worker.pid for worker in seen[0]] == [12]
+    assert pool.terminated, "the pool was left waiting for a worker that is gone"
+
+
+def test_a_live_pool_is_never_terminated() -> None:
+    """Guards the guard, in the direction that would end every batch early.
+
+    The watchdog runs on a timer and a stage can legitimately take minutes --
+    S10 is much the slowest -- so one that acted on the clock rather than on the
+    process would stop exactly the long videos it exists to protect.
+    """
+
+    pool = _Pool(_Worker(11, alive=True), _Worker(12, alive=True))
+
+    assert _watch(pool) == []
+    assert not pool.terminated
+
+
+def test_only_the_dead_workers_are_reported() -> None:
+    """Not "a worker died" but which ones -- a batch that stops has to say how
+    many videos it took with it, and the count comes from here."""
+
+    pool = _Pool(
+        _Worker(11, alive=True),
+        _Worker(12, alive=False),
+        _Worker(13, alive=False),
+    )
+
+    seen = _watch(pool)
+
+    assert seen and [worker.pid for worker in seen[0]] == [12, 13]
+
+
+def test_a_video_no_worker_returned_is_still_in_the_answer() -> None:
+    """The half of the fix that is easy to forget.
+
+    Stopping the wait is not enough: the iteration over a dead pool simply
+    *ends*, with no exception to catch, so a batch of ten would report the four
+    that finished and look exactly like a batch of four.
+    """
+
+    jobs = tuple(
+        batch.Job(
+            video_id=f"v{index}",
+            source=Path(f"v{index}.mp4"),
+            work_dir=Path("work") / f"v{index}",
+        )
+        for index in (1, 2, 3)
+    )
+    results = [
+        batch.VideoResult(video_id="v1", ok=True, seconds=1.0),
+        batch.VideoResult(video_id="v3", ok=True, seconds=1.0),
+    ]
+
+    accounted = batch.account_for_missing(results, jobs)
+
+    assert [item.video_id for item in accounted] == ["v1", "v2", "v3"]
+    missing = accounted[1]
+    assert not missing.ok
+    # Not blank: a failure with no reason is one nobody can act on.
+    assert "died" in missing.error
+    assert missing.failed_stage
+
+
+def test_a_complete_answer_is_left_alone() -> None:
+    """Guards the guard: inventing a failure for a video that succeeded would be
+    worse than the silence it replaces."""
+
+    jobs = tuple(
+        batch.Job(video_id=f"v{index}", source=Path("x"), work_dir=Path("w"))
+        for index in (1, 2)
+    )
+    results = [
+        batch.VideoResult(video_id="v2", ok=True, seconds=1.0),
+        batch.VideoResult(video_id="v1", ok=True, seconds=1.0),
+    ]
+
+    accounted = batch.account_for_missing(results, jobs)
+
+    # Reordered to the job list, and nothing added.
+    assert [item.video_id for item in accounted] == ["v1", "v2"]
+    assert all(item.ok for item in accounted)

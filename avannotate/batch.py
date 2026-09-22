@@ -35,8 +35,9 @@ import multiprocessing
 import os
 import queue
 import subprocess
+import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -515,6 +516,100 @@ def _worker_run(payload: dict[str, object]) -> dict[str, object]:
     return result.to_dict()
 
 
+#: How often the watchdog looks at the workers, in seconds.
+#:
+#: A module constant rather than an argument so a test can shorten it: the
+#: behaviour below is only observable by killing a process, and a test that has
+#: to wait ten seconds for that is a test that gets skipped.
+WORKER_WATCH_SECONDS = 10.0
+
+#: What a video's failure says when the process running it died.
+WORKER_DIED = (
+    "the worker process running this video died, so the batch was stopped "
+    "rather than left waiting for it; re-running resumes from the stages that "
+    "did finish"
+)
+
+
+def watch_workers(
+    pool: Any,
+    *,
+    stop: threading.Event,
+    seconds: float,
+    on_dead: Callable[[tuple[Any, ...]], None],
+) -> None:
+    """Stop the pool waiting for a worker that is never coming back.
+
+    ``Pool`` does not notice a worker dying.  The task it was running never
+    returns and the parent blocks on a result that will never arrive -- forever,
+    because nothing here is an error, it is only silence.  A batch that should
+    have reported a failure sits all night instead.
+
+    Liveness of the *process* and not of progress.  A stage can legitimately
+    take minutes -- S10 is much the slowest -- and a watchdog that watched the
+    clock would kill exactly the long videos it exists to protect.
+
+    Terminating takes the other workers' videos with them, and that is the right
+    trade: ``Pool`` cannot replace one worker, so the choice is between losing
+    the videos in flight and losing the whole night.
+
+    Returns when it has stopped the pool, or when ``stop`` is set.
+    """
+
+    while not stop.wait(seconds):
+        dead = tuple(worker for worker in _worker_processes(pool) if not worker.is_alive())
+        if dead:
+            on_dead(dead)
+            pool.terminate()
+            return
+
+
+def account_for_missing(
+    results: list[VideoResult], jobs: Sequence[Job]
+) -> list[VideoResult]:
+    """Every job in the answer, whether or not a worker returned it.
+
+    A worker that dies takes its video with it and the iteration over the pool
+    simply *ends* -- no exception, no sentinel, nothing to catch.  So without
+    this the batch reports the videos that happened to finish as though they
+    were all there was, which is the same silence one layer further out: the
+    watchdog stops the waiting, and this is what stops the lying.
+
+    Ordered by the job list rather than by who finished first, so the index
+    reads the same way the corpus was given.
+    """
+
+    reported = {item.video_id for item in results}
+    for job in jobs:
+        if job.video_id not in reported:
+            results.append(
+                VideoResult(
+                    video_id=job.video_id,
+                    ok=False,
+                    seconds=0.0,
+                    failed_stage="(unknown)",
+                    error=WORKER_DIED,
+                )
+            )
+
+    order = {job.video_id: index for index, job in enumerate(jobs)}
+    results.sort(key=lambda item: order[item.video_id])
+    return results
+
+
+def _worker_processes(pool: Any) -> tuple[Any, ...]:
+    """The pool's worker processes, or an empty tuple if they cannot be had.
+
+    ``Pool._pool`` is private and there is no public accessor for it -- which
+    matters, because "is a worker still alive" is exactly the question a parent
+    blocked on a result needs answered and ``Pool`` exposes nothing that answers
+    it.  Read through ``getattr`` so a Python that renames it degrades to no
+    watchdog rather than to an AttributeError in a thread.
+    """
+
+    return tuple(getattr(pool, "_pool", ()) or ())
+
+
 def run_corpus(
     jobs: Sequence[Job],
     *,
@@ -588,6 +683,31 @@ def run_corpus(
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
 
+    def report_dead(dead: tuple[Any, ...]) -> None:
+        emit(
+            f"  a worker process died (pid {dead[0].pid}) with "
+            f"{total - seen} video(s) unfinished; stopping the batch"
+        )
+
+    if _worker_processes(pool):
+        threading.Thread(
+            target=watch_workers,
+            args=(pool,),
+            kwargs={
+                "stop": stop,
+                "seconds": WORKER_WATCH_SECONDS,
+                "on_dead": report_dead,
+            },
+            daemon=True,
+        ).start()
+    else:
+        # Said once, loudly, rather than leaving a batch that looks watched and
+        # is not.
+        emit(
+            "  note: this Python does not expose the pool's workers, so a dead "
+            "worker will hang the batch instead of stopping it"
+        )
+
     results: list[VideoResult] = []
     try:
         for payload in pool.imap_unordered(
@@ -620,7 +740,7 @@ def run_corpus(
         pool.terminate()
         pool.join()
 
-    return results
+    return account_for_missing(results, jobs)
 
 
 def _clip(text: str, *, limit: int = 110) -> str:
