@@ -307,3 +307,44 @@ def test_yunet_detector_handles_a_changed_frame_size(
     detector = YuNetDetector(model)
     detector.detect(np.zeros((240, 320, 3), dtype=np.uint8))
     detector.detect(np.zeros((480, 640, 3), dtype=np.uint8))
+
+
+def test_a_window_running_past_the_end_repeats_the_last_frame(
+    single_shot_video: Path,
+) -> None:
+    """Running off the end of the file is ordinary, and used to raise.
+
+    S7 asked for one frame more than a video had and lost the whole video to it.
+    The frames that do arrive are the right ones in the right order, and the
+    audio they pair with was computed for exactly this many frames -- so the
+    tail is padded with the last real frame and both of those stay true.
+    """
+
+    info = probe_media(single_shot_video)
+    frames = list(
+        iter_window_frames(
+            single_shot_video,
+            width=64,
+            height=48,
+            start_time=info.duration - 0.2,  # about five frames from the end
+            count=100,                       # and a hundred asked for
+        )
+    )
+
+    assert len(frames) == 100
+    # The tail is constant, because it is one frame repeated...
+    assert np.array_equal(frames[-1], frames[-2])
+    # ...and it is a tail: the first frames are real ones, and they move.
+    assert not np.array_equal(frames[0], frames[-1])
+
+
+def test_a_window_inside_the_file_is_not_padded(single_shot_video: Path) -> None:
+    """Guards the guard: the padding must not creep into ordinary windows."""
+
+    frames = list(
+        iter_window_frames(single_shot_video, width=64, height=48, start_time=0.0, count=10)
+    )
+
+    assert len(frames) == 10
+    # Ten frames off an animated pattern, not one frame repeated ten times.
+    assert len({frame.tobytes() for frame in frames}) == 10

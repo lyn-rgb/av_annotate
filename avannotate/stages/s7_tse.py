@@ -165,7 +165,7 @@ def extract_segment(
     width: int,
     height: int,
     fps: float,
-    duration: float,
+    frame_count: int,
     sample_rate: int,
     crops_dir: Path,
     scratch_dir: Path,
@@ -173,7 +173,7 @@ def extract_segment(
     """Extract one segment and write it to ``audio/<identity>/<name>.wav``."""
 
     start_frame, end_frame = context_window(
-        segment, fps=fps, duration=duration, context_seconds=config.context_seconds
+        segment, fps=fps, frame_count=frame_count, context_seconds=config.context_seconds
     )
     crop_path = crops_dir / f"{segment.name}.mp4"
     write_crop_video(
@@ -289,7 +289,7 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
                     width=timeline.width,
                     height=timeline.height,
                     fps=timeline.fps,
-                    duration=timeline.duration,
+                    frame_count=timeline.frame_count,
                     sample_rate=timeline.sample_rate,
                     crops_dir=crops_dir,
                     scratch_dir=scratch_dir,

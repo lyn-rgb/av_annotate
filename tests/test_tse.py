@@ -83,23 +83,43 @@ def test_plan_extractions_clamps_to_the_video() -> None:
 
 def test_context_window_is_wider_than_the_segment() -> None:
     segment = ExtractionSegment("F001", 0, start=2.0, end=3.0)
-    start, end = context_window(segment, fps=25.0, duration=10.0, context_seconds=0.5)
+    start, end = context_window(segment, fps=25.0, frame_count=250, context_seconds=0.5)
     assert start == int(round(1.5 * 25))
     assert end == int(round(3.5 * 25))
 
 
 def test_context_window_is_clamped_to_the_video() -> None:
     first = ExtractionSegment("F001", 0, start=0.1, end=0.5)
-    assert context_window(first, fps=25.0, duration=10.0, context_seconds=0.5)[0] == 0
+    assert context_window(first, fps=25.0, frame_count=250, context_seconds=0.5)[0] == 0
 
     last = ExtractionSegment("F001", 1, start=9.8, end=10.0)
-    assert context_window(last, fps=25.0, duration=10.0, context_seconds=0.5)[1] == 250
+    assert context_window(last, fps=25.0, frame_count=250, context_seconds=0.5)[1] == 250
+
+
+def test_context_window_clamps_to_the_frame_count_not_the_duration() -> None:
+    """The pair that disagree, and the reason this takes a count at all.
+
+    Eight and a bit seconds at 25 fps rounds to more frames than a file which
+    ends on frame 214 holds.  Clamping to the duration asked the decoder for a
+    frame past the end, and the decoder refused the whole window rather than its
+    last frame -- S7 lost a video whose only fault was ending between two.
+    """
+
+    # duration * fps would give 215 for this one.
+    last = ExtractionSegment("F001", 0, start=8.0, end=8.6)
+    assert context_window(last, fps=25.0, frame_count=214, context_seconds=0.5)[1] == 214
+
+
+def test_context_window_rejects_a_negative_frame_count() -> None:
+    segment = ExtractionSegment("F001", 0, start=0.0, end=1.0)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        context_window(segment, fps=25.0, frame_count=-1, context_seconds=0.5)
 
 
 def test_context_window_rejects_a_bad_frame_rate() -> None:
     segment = ExtractionSegment("F001", 0, start=0.0, end=1.0)
     with pytest.raises(ValueError, match="fps must be positive"):
-        context_window(segment, fps=0.0, duration=10.0, context_seconds=0.5)
+        context_window(segment, fps=0.0, frame_count=250, context_seconds=0.5)
 
 
 # --------------------------------------------------------------------------- #

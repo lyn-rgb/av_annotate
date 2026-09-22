@@ -157,13 +157,28 @@ def identity_boxes(
 
 
 def context_window(
-    segment: ExtractionSegment, *, fps: float, duration: float, context_seconds: float
+    segment: ExtractionSegment, *, fps: float, frame_count: int, context_seconds: float
 ) -> tuple[int, int]:
-    """The frame range the extractor actually sees, wider than the segment."""
+    """The frame range the extractor actually sees, wider than the segment.
+
+    Clamped to ``frame_count`` -- the frames the container holds -- and not to
+    ``duration * fps``, which is what this used to do and is a different number.
+    Eight and a bit seconds at 25 fps rounds to more frames than a file that
+    ends on frame 214 has, so the window asked for one that does not exist, and
+    the decoder refused the whole window rather than its last frame:
+
+        s7-tse: FFmpegError: decoded 67 frames ... starting at 5.881s, expected 68
+
+    The video was fine.  ``Timeline.frame_count`` is the authority and has been
+    all along: S0's docstring says every later stage clamps to it, and this one
+    was clamping to the duration instead.
+    """
 
     if fps <= 0.0:
         raise ValueError(f"fps must be positive, got {fps}")
-    total = max(1, int(round(duration * fps)))
+    if frame_count < 0:
+        raise ValueError(f"frame_count cannot be negative, got {frame_count}")
+    total = max(1, frame_count)
     start = max(0, int(round((segment.start - context_seconds) * fps)))
     end = min(total, int(round((segment.end + context_seconds) * fps)))
     return start, max(start + 1, end)

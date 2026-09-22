@@ -236,25 +236,45 @@ def iter_window_frames(
     drainer.start()
 
     produced = 0
+    last: Frame | None = None
     try:
         while produced < count:
             chunk = process.stdout.read(frame_bytes)
             if len(chunk) < frame_bytes:
                 break
             shape = (height, width) if gray else (height, width, channels)
-            yield np.frombuffer(chunk, dtype=np.uint8).reshape(shape).copy()
+            last = np.frombuffer(chunk, dtype=np.uint8).reshape(shape).copy()
             produced += 1
+            yield last
     finally:
         process.stdout.close()
         process.wait()
         drainer.join(timeout=5.0)
 
-    if produced != count:
-        detail = b"".join(captured).decode("utf-8", "replace").strip()
-        raise FFmpegError(
-            f"decoded {produced} frames from {source.name} starting at {start_time:.3f}s, "
-            f"expected {count}" + (f": {detail}" if detail else "")
-        )
+    if produced == count:
+        return
+
+    # Short.  Two very different things look identical from here -- the video
+    # ended before the window did, or ffmpeg died partway -- and the exit status
+    # is what separates them: a clean exit means it read to the end and stopped
+    # because there was nothing left.
+    #
+    # Running off the end is ordinary, not exceptional.  The frames that did
+    # arrive are the right ones in the right order, and the audio this is paired
+    # with was computed for exactly ``count`` frames, so the last frame is
+    # repeated to reach that length rather than the whole window being refused.
+    # Refusing it cost S7 a video whose only fault was ending between two
+    # frames.
+    if produced > 0 and last is not None and process.returncode == 0:
+        for _ in range(count - produced):
+            yield last
+        return
+
+    detail = b"".join(captured).decode("utf-8", "replace").strip()
+    raise FFmpegError(
+        f"decoded {produced} frames from {source.name} starting at {start_time:.3f}s, "
+        f"expected {count}" + (f": {detail}" if detail else "")
+    )
 
 
 def iter_sampled_frames(
