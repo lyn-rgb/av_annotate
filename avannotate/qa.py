@@ -153,11 +153,21 @@ def gate_timeline_sanity(annotation: Annotation) -> GateResult:
                 name, False, f"{item.face_id} utterance ends before it starts: {item.start}"
             )
         if item.start < 0.0 or item.end > duration + 1e-6:
+            # Three decimals and an explicit overshoot, because two hid the very
+            # number this message exists to report.  A span ending at 8.7201 in
+            # an 8.715 s video printed as
+            #
+            #     utterance [6.38, 8.72] falls outside the video's 8.72s
+            #
+            # which reads as a contradiction and sent its reader looking for a
+            # logic error in the gate.  The gate was right; the message was
+            # rounding away the only evidence there was.
+            overshoot = max(item.end - duration, -item.start)
             return GateResult(
                 name,
                 False,
-                f"{item.face_id} utterance [{item.start:.2f}, {item.end:.2f}] "
-                f"falls outside the video's {duration:.2f}s",
+                f"{item.face_id} utterance [{item.start:.3f}, {item.end:.3f}] "
+                f"falls outside the video's {duration:.3f}s by {overshoot:.6f}s",
             )
 
     for face_id in {item.face_id for item in annotation.utterances}:

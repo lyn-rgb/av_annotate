@@ -319,3 +319,39 @@ def test_metrics_count_tags_and_flags() -> None:
     assert metrics["tagged_utterance_count"] == 1.0
     assert metrics["short_utterance_count"] == 1.0
     assert metrics["utterance_count"] == 2.0
+
+
+def test_an_out_of_range_span_says_by_how_much() -> None:
+    """Guards the message, not the gate.
+
+    Both spans used to print to two decimals, so a real overshoot of a few
+    milliseconds rendered as
+
+        utterance [29.00, 30.00] falls outside the video's 30.00s
+
+    -- a contradiction on its face, which sends its reader looking for a logic
+    error in a gate that has none.  The gate was right; the message was
+    rounding away the only evidence there was.
+    """
+
+    overshoot = 0.0049
+    annotation = _annotation(
+        utterances=(
+            Utterance(
+                face_id="F001",
+                start=29.0,
+                end=VIDEO.duration + overshoot,
+                text="just past the end",
+            ),
+        ),
+        tracks=(_track("F001"),),
+    )
+
+    result = gate_timeline_sanity(annotation)
+
+    assert not result.passed
+    assert f"by {overshoot:.6f}s" in result.detail
+    # And the two ends render differently, which at two decimals they did not.
+    assert f"{VIDEO.duration + overshoot:.3f}" in result.detail
+    assert f"{VIDEO.duration:.3f}" in result.detail
+    assert f"{VIDEO.duration + overshoot:.3f}" != f"{VIDEO.duration:.3f}"

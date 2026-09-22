@@ -69,7 +69,13 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s11-compose"
-VERSION = "s11-v1"
+#: v2: the timeline_sanity message printed its spans to two decimals, which
+#: rounded away the overshoot it was reporting -- a span at 8.7201 in an
+#: 8.715 s video read as "8.72 outside 8.72".  The gate was right and the
+#: message was useless.  Bumped because the report is S11's artifact and
+#: nothing else about the stage changed: without this the stage would skip
+#: and reprint the old one.
+VERSION = "s11-v2"
 
 SCRIPT_NAME = "annotation.txt"
 ANNOTATION_NAME = "annotation.json"
