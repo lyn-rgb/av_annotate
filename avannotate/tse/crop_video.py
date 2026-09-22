@@ -12,6 +12,13 @@ the visual encoder takes, and hand the result to ffmpeg to encode.  Frames go
 through a pipe rather than a temporary image directory -- a ten-second segment
 is 250 frames, and a thousand of those is a hundred thousand files.
 
+**The sound comes along.**  The model is audio-visual: the crop says which face,
+and the audio is the thing being separated, so the segment's own sound is muxed
+into the file alongside the frames.  A crop without it is one the extractor can
+do nothing with -- and it reports that by going looking for a per-track wav that
+was never written, which names a missing file rather than a missing audio track.
+This wrote ``-an`` for a while, so every crop was silent.
+
 One frame at a time, end to end.  Ten seconds of 1080p is 1.5 GB of raw frames,
 and materialising a segment before encoding it would make the stage's memory
 scale with its resolution instead of with its pipe buffer.
@@ -169,6 +176,7 @@ def write_crop_video(
             "-v",
             "error",
             "-nostdin",
+            # Input 0: the cropped face, one raw frame at a time down the pipe.
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -179,7 +187,31 @@ def write_crop_video(
             f"{fps:.6f}",
             "-i",
             "-",
-            "-an",
+            # Input 1: the original, for its audio and nothing else.
+            #
+            # The extractor is **audio-visual**, and that is the whole design of
+            # this stage: the crop says *which* face, and the sound is the thing
+            # being separated.  A crop with no soundtrack is one it can do
+            # nothing with -- and it says so a long way from here, by going
+            # looking for the per-track wav it means to write from this audio:
+            #
+            #     FileNotFoundError: '.../F001_0000/py_faceTracks/00000.wav'
+            #
+            # Nothing in that names a missing audio track.  This used to pass
+            # ``-an``, so every crop was silent and S7 could never have worked.
+            "-ss",
+            f"{max(0.0, start_time):.4f}",
+            "-t",
+            f"{frame_count / fps:.4f}",
+            "-i",
+            str(source),
+            "-map",
+            "0:v",
+            # ``?`` so that a source with no audio is still a source: the crop
+            # comes out silent, and the extractor's own complaint about that is
+            # clearer than anything raised here would be.
+            "-map",
+            "1:a?",
             "-c:v",
             codec,
             # Quality settings are per-codec, not per-encoder-role: -crf and
@@ -188,6 +220,10 @@ def write_crop_video(
             # is obliged to raise, so getting this wrong could quietly encode
             # at the default quality instead of the one asked for.
             *_quality_args(codec),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             "-pix_fmt",
             "yuv420p",
             str(target),

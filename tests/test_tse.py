@@ -247,6 +247,76 @@ def test_write_crop_video_produces_a_playable_video(
     assert cropped.frame_count == 10
 
 
+def test_the_crop_carries_the_original_audio(
+    single_shot_video: Path, tmp_path: Path
+) -> None:
+    """The extractor is audio-visual, so a silent crop is a useless one.
+
+    The crop says *which* face and the sound is what gets separated.  This used
+    to write ``-an``, and S7 reported the consequence a long way from here, as a
+    per-track wav that was not there:
+
+        FileNotFoundError: '.../F001_0000/py_faceTracks/00000.wav'
+    """
+
+    from avannotate.ffmpeg import probe_media
+
+    info = probe_media(single_shot_video)
+    assert info.has_audio, "the fixture carries a tone; this test needs it to"
+
+    target = tmp_path / "crop.mp4"
+    write_crop_video(
+        single_shot_video,
+        target,
+        width=info.width,
+        height=info.height,
+        start_time=0.0,
+        frame_count=10,
+        boxes=[(20.0, 20.0, 40.0, 40.0)] * 10,
+        fps=info.fps,
+        size=64,
+    )
+
+    cropped = probe_media(target)
+    assert cropped.has_audio
+    # The same 0.4 s as the pictures, not the whole three-second clip.  An audio
+    # track of the wrong length is as useless to the model as none at all, and
+    # passes every check that only asks whether audio is there.
+    assert cropped.duration == pytest.approx(10 / info.fps, abs=0.05)
+
+
+def test_a_source_without_audio_still_produces_a_crop(
+    video_without_audio: Path, tmp_path: Path
+) -> None:
+    """Guards the guard: the optional audio map must not fail on a silent file.
+
+    ``-map 1:a?`` is optional on purpose -- a source with no soundtrack is still
+    a source, and the extractor's own complaint about a silent crop is clearer
+    than anything raised here would be.
+    """
+
+    from avannotate.ffmpeg import probe_media
+
+    info = probe_media(video_without_audio)
+    assert not info.has_audio
+
+    target = tmp_path / "crop.mp4"
+    write_crop_video(
+        video_without_audio,
+        target,
+        width=info.width,
+        height=info.height,
+        start_time=0.0,
+        frame_count=10,
+        boxes=[(10.0, 10.0, 20.0, 20.0)] * 10,
+        fps=info.fps,
+        size=64,
+    )
+
+    assert target.is_file()
+    assert probe_media(target).frame_count == 10
+
+
 def test_write_crop_video_rejects_an_empty_range(
     single_shot_video: Path, tmp_path: Path
 ) -> None:
