@@ -224,6 +224,12 @@ def run(context: StageContext, *, force: bool = False) -> StageRun:
             "turns": len(result.turns),
             "overlap_ratio": round(result.overlap_ratio, 4),
             "model": config.model,
+            # What actually ran, not what was configured.  The adapter halves
+            # this on every CUDA OOM and keeps what fitted, and on a shared card
+            # that can be a long way below the number in the config -- which is
+            # the difference between a card at 90% and one at nothing, so it is
+            # the number the summary has to carry.
+            "batch_size_used": getattr(diarizer, "batch_size", config.batch_size),
         },
     )
 

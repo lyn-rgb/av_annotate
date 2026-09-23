@@ -48,6 +48,7 @@ rejects a bare string -- and whether ``itertracks`` yields the tuple shape above
 from __future__ import annotations
 
 import importlib
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -263,9 +264,17 @@ class DiariZenDiarizer:
                         "card, or this device cannot fit the model at all."
                     ) from error
                 self.batch_size = max(MIN_BATCH_SIZE, self.batch_size // 2)
+                # Flushed, and to stderr.  This is the only trace of the one
+                # thing that decides how well this stage uses a card, and a
+                # worker's stdout is a block-buffered pipe: the message sat in
+                # the buffer and went out with `pool.terminate()`, so a run
+                # where every worker had halved its way down to a batch of one
+                # looked exactly like a run where nothing had gone wrong.
                 print(
                     f"   DiariZen ran out of memory on {filename}; retrying at "
-                    f"batch size {self.batch_size}"
+                    f"batch size {self.batch_size}",
+                    file=sys.stderr,
+                    flush=True,
                 )
 
     def diarize(self, audio: Path) -> DiarizationResult:

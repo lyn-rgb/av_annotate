@@ -515,3 +515,70 @@ def test_running_out_at_the_floor_is_reported_as_itself(tmp_path: Path) -> None:
     with pytest.raises(DiarizerError, match="even at a batch size"):
         diarizer.diarize(tmp_path / "clip.wav")
     assert diarizer.batch_size == 1
+
+
+class _OomUntilSmallEnough:
+    """A pipeline that runs out of memory until the batch fits.
+
+    Which is what the real one does on a 24 GB card: its own config asks for 32,
+    and pyannote re-raises the CUDA OOM as a ``MemoryError`` carrying that
+    number.
+    """
+
+    def __init__(self, *, fits_at: int) -> None:
+        self.fits_at = fits_at
+        self.attempts: list[int] = []
+        # pyannote's defaults, so "the adapter set them" stays testable.
+        self.embedding_batch_size = 1
+        self.segmentation_batch_size = 1
+
+    def __call__(self, audio: str) -> object:
+        self.attempts.append(self.embedding_batch_size)
+        if self.embedding_batch_size > self.fits_at:
+            raise MemoryError(
+                f"batch_size ( {self.embedding_batch_size}) is probably too large."
+            )
+        return object()
+
+
+def test_running_out_of_memory_halves_the_batch(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pipeline = _OomUntilSmallEnough(fits_at=4)
+    diarizer = _adapter(pipeline)
+
+    diarizer._call("mix.wav")
+
+    assert diarizer.batch_size == 4
+    assert pipeline.attempts == [32, 16, 8, 4], "each retry should try the halved size"
+    assert pipeline.segmentation_batch_size == 4, "both fields, or one silently drops to 1"
+
+
+def test_the_retry_is_said_out_loud_and_on_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The only trace of the number that decides how well this stage uses a card.
+
+    Two things had to be wrong for it to be invisible: the message went to
+    stdout, which in a worker is a block-buffered pipe, and the pool is
+    terminated rather than joined, so an unflushed buffer is discarded.  A run
+    where every worker halved its way down to one chunk at a time looked
+    exactly like a run where nothing had gone wrong.
+    """
+
+    diarizer = _adapter(_OomUntilSmallEnough(fits_at=8))
+
+    diarizer._call("mix.wav")
+
+    captured = capsys.readouterr()
+    assert "retrying at batch size 16" in captured.err
+    assert captured.out == "", "stdout is buffered away; this has to be stderr"
+
+
+def test_running_out_of_memory_at_one_chunk_is_an_error() -> None:
+    """Past this there is nothing left to give, and saying so beats looping."""
+
+    diarizer = _adapter(_OomUntilSmallEnough(fits_at=0))
+
+    with pytest.raises(DiarizerError, match="even at a batch"):
+        diarizer._call("mix.wav")
