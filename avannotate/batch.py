@@ -45,8 +45,14 @@ from typing import Any
 
 from avannotate.media import is_media_file
 from avannotate.progress import format_duration
-from avannotate.stages import STAGE_ORDER, get_stage
-from avannotate.stages.base import StageContext, StageError, load_config_file
+from avannotate.stages import STAGE_ORDER, get_stage, s11_compose
+from avannotate.stages.base import (
+    StageContext,
+    StageError,
+    StageRecord,
+    StageState,
+    load_config_file,
+)
 
 #: The config each stage is normally run with.  S1 is the one with a real
 #: choice: insightface produces the identity vectors S3 needs, YuNet does not.
@@ -223,7 +229,7 @@ def is_complete(job: Job) -> bool:
     there, so rerunning one costs the compose step and not the models.
     """
 
-    return (job.work_dir / "s11-compose" / "annotation.json").is_file()
+    return s11_compose.deliverable_path(job.work_dir).is_file()
 
 
 def parse_gpu_list(raw: str | None) -> tuple[int, ...] | None:
@@ -381,6 +387,48 @@ class VideoResult:
         }
 
 
+def _note_failure(context: StageContext, stage: str, module: Any, error: BaseException) -> None:
+    """Make sure a stage that raised also left a record that it did.
+
+    Half the stages write a failed ``StageRecord`` themselves, around the calls
+    they were expected to fail in -- a missing checkpoint, a card that ran out
+    of memory.  The rest raise straight into the loop above and leave nothing on
+    disk at all, so "the video died at S0" and "nothing ever ran on this video"
+    are the same thing to anything reading the work directory afterwards: a
+    directory with no failed record in it.  The corpus report reads exactly that
+    difference, and gets it wrong for every stage in the second group.
+
+    Written only when one is not already there.  A stage that recorded its own
+    failure put its config and input hashes in it, and those cannot be
+    reconstructed out here -- overwriting it would trade a full record for a
+    thinner one to say the same thing.
+    """
+
+    try:
+        state = StageState(context.work_dir)
+        existing = state.record_for(stage)
+        if existing is not None and existing.status == "failed":
+            return
+        state.save(
+            StageRecord(
+                stage=stage,
+                status="failed",
+                code_version=str(getattr(module, "VERSION", "")),
+                # Empty rather than guessed: this record exists to say the
+                # stage did not finish, and a hash that was never computed
+                # would be a claim about inputs nobody checked.
+                config_hash="",
+                input_hash="",
+                error=f"{type(error).__name__}: {error}",
+            )
+        )
+    except OSError:
+        # Recording a failure must not become a second one.  The video is
+        # already on its way into failures.jsonl, and this loop's job is to
+        # report the stage's error rather than one of its own.
+        pass
+
+
 def run_video(
     job: Job,
     *,
@@ -429,6 +477,7 @@ def run_video(
             result.error = f"{type(error).__name__}: {error}"
             result.failed_stage = stage
             result.seconds = time.monotonic() - started
+            _note_failure(context, stage, module, error)
             return result
 
         result.stages.append(

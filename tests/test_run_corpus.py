@@ -51,6 +51,10 @@ for argument in "$@"; do
 @STAGES@LIST
         exit 0
     fi
+    if [[ "$argument" == "report" ]]; then
+        printf 'videos    3 (3 ok, 0 failed)\n'
+        exit "${REPORT_STATUS:-0}"
+    fi
 done
 
 stage=""
@@ -225,3 +229,41 @@ def test_the_combined_log_survives_a_second_run(corpus: _Corpus) -> None:
     assert "videos   3 ok, 0 failed" in combined
     # And the per-stage log holds only the latest attempt, not both.
     assert (corpus.output / "logs" / "s0-preprocess.log").read_text().count("start  clipA") == 1
+
+
+# --------------------------------------------------------------------------- #
+# the written account
+# --------------------------------------------------------------------------- #
+
+
+def test_the_corpus_report_is_written_at_the_end(corpus: _Corpus) -> None:
+    """Even a run that stopped early gets one -- that is the run that needs it."""
+
+    result = corpus.run()
+
+    assert "videos    3 (3 ok, 0 failed)" in result.stdout
+
+
+def test_the_report_is_written_even_when_the_run_aborted(corpus: _Corpus) -> None:
+    result = corpus.run(FAIL_STAGE="s3-cluster")
+
+    assert result.returncode == 1
+    assert "videos    3 (3 ok, 0 failed)" in result.stdout, "the report was skipped"
+
+
+def test_a_corpus_with_failures_fails_the_script(corpus: _Corpus) -> None:
+    """The exit status is the report's, because that is the one that counts
+    videos rather than stages.
+
+    Every batch invocation exits nonzero when anything failed, so the driver
+    cannot use those -- it would stop at the first stage that lost a video.  The
+    report is asked at the end, once, and answers for the corpus.
+    """
+
+    result = corpus.run(REPORT_STATUS="1")
+
+    assert result.returncode == 1
+
+
+def test_a_clean_corpus_exits_zero(corpus: _Corpus) -> None:
+    assert corpus.run().returncode == 0

@@ -217,6 +217,17 @@ printf '\033[1m===== summary =====\033[0m  %s\n' "$(date '+%H:%M:%S')"
 for line in "${ledger[@]}"; do printf '  %s\n' "$line"; done
 printf '  %-18s %s\n' "total" "$(printf '%dh%02dm%02ds' $((total / 3600)) $((total % 3600 / 60)) $((total % 60)))"
 
+# Written before either exit path, because the run that stopped early is the
+# run that most needs a written account of what it got through.  Read off the
+# work directories rather than out of the logs: the logs hold what each stage
+# said while it was running, and this holds what the videos actually ended up
+# with.  Its exit status is the corpus's: nonzero when any video failed.
+printf '\n'
+set +e
+"$PYTHON" -m avannotate.cli report --output "$OUTPUT" --list "$LIST"
+report_status=$?
+set -e
+
 if [[ -n "$aborted" ]]; then
     printf '\n\033[31mstopped: %s\033[0m\n' "$aborted" >&2
     printf '  log: %s/%s.log\n' "$LOGS" "$aborted_stage" >&2
@@ -225,4 +236,4 @@ if [[ -n "$aborted" ]]; then
 fi
 
 printf '\ndeliverables in %s/work/*/s11-compose/\n' "$OUTPUT"
-printf 'failures, if any, in %s/failures.jsonl (last stage to run)\n' "$OUTPUT"
+exit "$report_status"

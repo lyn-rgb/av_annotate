@@ -263,6 +263,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def _cmd_report(args: argparse.Namespace) -> int:
+    """Summarise a run from what is on disk, and write it down."""
+
+    from avannotate import report as report_module
+
+    output = args.output.expanduser().resolve()
+    if not output.is_dir():
+        raise SystemExit(f"no output directory at {output}")
+
+    summary = report_module.build(output, listing=args.list.expanduser() if args.list else None)
+    document, data = report_module.write(summary)
+
+    total = len(summary.outcomes)
+    print(f"videos    {total} ({len(summary.succeeded)} ok, {len(summary.failed)} failed)")
+    for stage in STAGE_ORDER:
+        stopped = summary.stopped.get(stage, 0)
+        if stopped:
+            print(f"          {stage:22} stopped {stopped}")
+    print(f"report    {document}")
+    print(f"data      {data}")
+
+    # Nonzero when anything failed, so a scheduler notices without reading it.
+    return 1 if summary.failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="avannotate",
@@ -272,6 +297,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     stages = subparsers.add_parser("stages", help="list the pipeline's stages")
     stages.set_defaults(handler=_cmd_stages)
+
+    report = subparsers.add_parser(
+        "report",
+        help="what a corpus run produced: counts, and every failure",
+        description=(
+            "Reads the output directory back off the disk and writes "
+            "corpus_report.md and corpus_report.json into it. Safe to run at "
+            "any time, including while a batch is working."
+        ),
+    )
+    report.add_argument(
+        "--output", required=True, type=Path, help="the output root to read back"
+    )
+    report.add_argument(
+        "--list",
+        type=Path,
+        help="the run's video list, so videos nothing ever ran on are counted too",
+    )
+    report.set_defaults(handler=_cmd_report)
 
     doctor = subparsers.add_parser(
         "doctor",

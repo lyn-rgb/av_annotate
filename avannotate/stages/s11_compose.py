@@ -324,8 +324,21 @@ def script_path(context: StageContext) -> Path:
     return path
 
 
+def deliverable_path(work_dir: Path) -> Path:
+    """Where a video's deliverable lives, whether or not it is there yet.
+
+    The one place that knows a finished video means "S11 wrote its
+    ``annotation.json``".  ``batch.is_complete`` and the corpus report both ask
+    that question, and two literals spelling it out separately is how they come
+    to disagree -- which shows up as a report that calls a video done beside a
+    resume that calls it unfinished.
+    """
+
+    return work_dir / STAGE / ANNOTATION_NAME
+
+
 def annotation_path(context: StageContext) -> Path:
-    path = context.work_dir / STAGE / ANNOTATION_NAME
+    path = deliverable_path(context.work_dir)
     if not path.is_file():
         raise FileNotFoundError(f"{path} is missing; run {STAGE} first")
     return path

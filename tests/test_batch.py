@@ -22,7 +22,7 @@ import pytest
 
 from avannotate import batch
 from avannotate.stages import STAGE_ORDER
-from avannotate.stages.base import StageError, StageRun
+from avannotate.stages.base import StageError, StageRecord, StageRun, StageState
 
 
 def _video(directory: Path, name: str) -> Path:
@@ -856,3 +856,85 @@ def test_the_bar_advances_once_per_video_whatever_the_outcome(
 
     assert watched == [False, False]
     assert len(lines) == 2, "two failures, two lines"
+
+
+# --------------------------------------------------------------------------- #
+# a failure that is written down
+# --------------------------------------------------------------------------- #
+#
+# Half the stages save a failed StageRecord themselves, around the calls they
+# were expected to fail in.  The rest raise into run_video and used to leave
+# nothing on disk, which made "died at S0" and "was never attempted" the same
+# thing to anything reading the work directory afterwards -- including the
+# corpus report, which lists both under the same heading.
+
+
+class _SilentStage:
+    """Raises without recording anything, as half the stages do."""
+
+    def run(self, context: object, *, force: bool = False) -> object:
+        raise StageError("probing the video failed")
+
+
+class _RecordingStage:
+    """Records its own failure first, as the other half do."""
+
+    def run(self, context: object, *, force: bool = False) -> object:
+        StageState(context.work_dir).save(
+            StageRecord(
+                stage="s0-preprocess",
+                status="failed",
+                code_version="v9",
+                config_hash="real-config-hash",
+                input_hash="real-input-hash",
+                error="what the stage itself said",
+            )
+        )
+        raise StageError("and then raised anyway")
+
+
+def _run_one_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: object) -> Path:
+    monkeypatch.setattr(batch, "get_stage", lambda _: stage)
+    job = batch.Job(
+        video_id="v1", source=tmp_path / "v1.mp4", work_dir=tmp_path / "work" / "v1"
+    )
+    batch.run_video(
+        job,
+        stages=("s0-preprocess",),
+        config_root=Path(__file__).resolve().parents[1] / "configs",
+    )
+    return job.work_dir
+
+
+def test_a_stage_that_raises_still_leaves_a_failure_on_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Otherwise the video is indistinguishable from one nothing ran on."""
+
+    work_dir = _run_one_stage(tmp_path, monkeypatch, _SilentStage())
+
+    record = StageState(work_dir).record_for("s0-preprocess")
+
+    assert record is not None, "the failure was not written down anywhere"
+    assert record.status == "failed"
+    assert "probing the video failed" in (record.error or "")
+
+
+def test_a_stage_that_recorded_its_own_failure_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The batch fills a gap; it does not overwrite.
+
+    Only the stage knows its config and input hashes, and a second record
+    written from outside would trade them for empty strings to say the same
+    thing less usefully.
+    """
+
+    work_dir = _run_one_stage(tmp_path, monkeypatch, _RecordingStage())
+
+    record = StageState(work_dir).record_for("s0-preprocess")
+
+    assert record is not None
+    assert record.config_hash == "real-config-hash"
+    assert record.input_hash == "real-input-hash"
+    assert record.error == "what the stage itself said"
