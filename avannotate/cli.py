@@ -107,7 +107,18 @@ def _cmd_batch(args: argparse.Namespace) -> int:
 
     from avannotate import batch as batch_module
 
+    # The two slow things that happen before the first line of the report are
+    # announced first.  Reading the list is a stat per entry against whatever
+    # filesystem the corpus is on -- a tenth of a millisecond each on a local
+    # disk and a hundred times that on a cluster mount -- and detecting the
+    # GPUs shells out to nvidia-smi and may import torch.  Together that is a
+    # minute of a program that has printed nothing, which is indistinguishable
+    # from one that has hung, and was reported as exactly that.
+    print(f"list      {args.input}", flush=True)
     sources = batch_module.read_video_list(args.input, base=Path.cwd())
+    resolved = len(sources)
+    print(f"          {resolved} {'entry' if resolved == 1 else 'entries'} resolved", flush=True)
+
     output = args.output.expanduser().resolve()
     config_root = (
         args.configs.expanduser().resolve()
@@ -123,6 +134,7 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     jobs = batch_module.plan_jobs(sources, output=output)
     gpus = batch_module.parse_gpu_list(args.gpus)
     if gpus is None:
+        print("gpus      detecting", flush=True)
         gpus = batch_module.detect_gpus()
     devices, workers = batch_module.plan_workers(gpus=gpus, requested=args.workers)
 

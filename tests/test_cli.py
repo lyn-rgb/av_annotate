@@ -198,3 +198,24 @@ def test_verbose_brings_the_lines_back(
     out = capsys.readouterr().out
     assert "start" in out
     assert "s0-preprocess" in out
+
+
+def test_the_slow_steps_before_the_header_announce_themselves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A program that prints nothing for a minute looks exactly like one that
+    has hung -- which is how this was reported.
+
+    Reading the list is a stat per entry on the corpus's filesystem, and
+    detecting the GPUs shells out to nvidia-smi and may import torch.  Both
+    happen before the first line of the report, so both say that they started.
+    """
+
+    _stub_corpus(monkeypatch)
+
+    assert cli._cmd_batch(_batch_args(tmp_path)) == 0  # type: ignore[arg-type]
+
+    out = capsys.readouterr().out
+    assert "list      " in out
+    assert "resolved" in out
+    assert "gpus      detecting" in out
