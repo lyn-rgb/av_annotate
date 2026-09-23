@@ -41,6 +41,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from avannotate.paralinguistic.types import DIMENSIONS, TagScore
+from avannotate.quiet import quiet, tail
 
 #: What every stage upstream produces and what two of the three models take.
 SAMPLE_RATE = 16_000
@@ -293,17 +294,41 @@ class ThreeModelTagger:
     # -- the one call ------------------------------------------------------ #
 
     def tag(self, samples: NDArray[np.float32]) -> Mapping[str, tuple[TagScore, ...]]:
+        """Every configured dimension, with the libraries kept off the console.
+
+        They narrate, per call rather than per process: emotion2vec draws a tqdm
+        bar and prints a timing dict, ``transformers`` writes its warnings, and
+        loading any of the three prints its own progress.  S9 calls this once
+        per speech segment, so a corpus produces more of their output than of
+        ours -- on top of the progress bar, which is the stage's own report.
+
+        Wrapped around the whole loop rather than around each model, because the
+        loading happens inside it: the first call for a dimension builds the
+        model, and a barrier around only the inference would leave every load
+        talking.
+
+        The message keeps what they said only when one of them fails, which is
+        when it is worth having.
+        """
+
         if len(samples) == 0:
             raise TaggerError("refusing to tag an empty array")
 
         reported: dict[str, tuple[TagScore, ...]] = {}
-        for dimension in self.dimensions:
-            method = {
-                "emotion": self._emotion,
-                "delivery": self._delivery,
-                "event": self._event,
-            }[dimension]
-            reported[dimension] = method(samples)
+        with quiet() as said:
+            for dimension in self.dimensions:
+                method = {
+                    "emotion": self._emotion,
+                    "delivery": self._delivery,
+                    "event": self._event,
+                }[dimension]
+                try:
+                    reported[dimension] = method(samples)
+                except Exception as error:  # noqa: BLE001 - report, do not swallow
+                    raise TaggerError(
+                        f"the {dimension} tagger failed: {type(error).__name__}: {error}"
+                        + (f"; it said: {tail(said())}" if said() else "")
+                    ) from error
         return reported
 
 

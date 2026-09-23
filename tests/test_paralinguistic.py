@@ -17,6 +17,7 @@ import pytest
 
 from avannotate.annotation import parse_script, render_script
 from avannotate.audio.wav import WavError, write_pcm16
+from avannotate.paralinguistic.model import TaggerError, ThreeModelTagger
 from avannotate.paralinguistic.reduce import ReduceConfig, reduce_tags, unmapped_labels
 from avannotate.paralinguistic.types import DIMENSIONS, SegmentTags, TagScore
 from avannotate.paralinguistic.vocabulary import (
@@ -619,3 +620,58 @@ def test_a_segment_record_round_trips_through_json() -> None:
     assert payload["tag"] == "laughter"
     assert payload["duration"] == 1.0
     assert payload["choice"]["candidates"][0]["dimension"] == "event"
+
+
+# --------------------------------------------------------------------------- #
+# the taggers narrate
+# --------------------------------------------------------------------------- #
+#
+# Per call, not per process: emotion2vec draws a tqdm bar and prints a timing
+# dict, transformers writes its warnings, and loading any of the three prints
+# its own progress.  S9 calls this once per speech segment, so a corpus produces
+# more of their output than of ours -- over the top of the progress bar, which
+# is the stage's own report.
+
+
+class _ChattyModel:
+    """Stands in for emotion2vec: prints like it, then fails like it."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def get(self) -> object:
+        print("emotion2vec: loading iic/emotion2vec_plus_large")
+        return self
+
+    def generate(self, *args: object, **kwargs: object) -> object:
+        print("rtf_avg: 0.007: 100%|##########| 1/1 [00:00<00:00, 20.47it/s]")
+        raise self._error
+
+
+def test_a_failing_tagger_carries_what_the_library_said(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """The failure that matters is the one whose own message says nothing.
+
+    Which is most of them: what comes back from a model that met an unexpected
+    shape is one line, and the useful part is the bar it printed on the way --
+    the batch size, the timing, whether it was the load that failed or the call.
+
+    The wrapping is asserted through this message rather than by watching the
+    console, because ``quiet`` itself is exercised in a subprocess in
+    ``test_tse`` -- pytest captures at both levels here, so an in-process test
+    cannot tell "the redirection worked" from "pytest swallowed it first".
+    """
+
+    tagger = ThreeModelTagger(dimensions=("emotion",))
+    tagger._models["emotion"] = _ChattyModel(RuntimeError("unexpected key in the output"))
+
+    # Disabled because the library's output has to reach the descriptor the
+    # redirection replaces; under pytest's capture it never gets that far.
+    with capfd.disabled(), pytest.raises(TaggerError) as raised:
+        tagger.tag(np.zeros(16000, dtype=np.float32))
+
+    message = str(raised.value)
+    assert "the emotion tagger failed" in message
+    assert "unexpected key in the output" in message, "the original error must survive"
+    assert "rtf_avg" in message, "and so must what it printed on the way"

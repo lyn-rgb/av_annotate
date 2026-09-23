@@ -47,13 +47,12 @@ wrote.
 
 from __future__ import annotations
 
-import os
-import sys
 import tempfile
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
+
+from avannotate.quiet import quiet, tail
 
 #: The model name ClearerVoice registers this checkpoint under.
 MODEL_NAME = "AV_MossFormer2_TSE_16K"
@@ -86,74 +85,6 @@ class TargetSpeakerExtractor(Protocol):
         caller should treat as one.
         """
         ...
-
-
-@contextmanager
-def _quiet() -> Iterator[Callable[[], str]]:
-    """Run a chatty library without letting it into the log, keeping what it said.
-
-    ClearerVoice narrates.  It announces the model it is loading, says something
-    about every file it touches, and shells out to ffmpeg for the audio, whose
-    own output inherits this process's and lands in the log too.  S7 calls it
-    once per face per speech segment -- a few thousand videos is more of the
-    library's output than of ours -- and the stage's own report is the progress
-    bar.  A library talking over it is the pile of intermediate output the bar
-    exists to replace, arriving from a direction the rest of the pipeline had
-    already dealt with.
-
-    Kept rather than thrown away, and handed back by the yielded callable so the
-    caller can put it in the error it raises: a failure inside a library is
-    exactly when its last few lines are worth having, and a message with no
-    context is what discarding it would buy.
-
-    Both the file descriptors and the two Python wrappers over them, and in that
-    order -- a ``print`` already sitting in Python's buffer would otherwise
-    arrive after the restore and appear in the log anyway.
-    """
-
-    # Two sinks, not one.  Sharing a file would interleave them in whatever
-    # order the two buffers happened to flush -- Python's stdout is block
-    # buffered and the library's stderr usually is not, so a line printed first
-    # regularly lands last.  The tail of that is not the end of anything, and
-    # "the last few lines" is the whole point of keeping this.
-    with tempfile.TemporaryFile() as out_sink, tempfile.TemporaryFile() as err_sink:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        saved = os.dup(1), os.dup(2)
-        os.dup2(out_sink.fileno(), 1)
-        os.dup2(err_sink.fileno(), 2)
-
-        def said() -> str:
-            sys.stdout.flush()
-            sys.stderr.flush()
-            parts: list[str] = []
-            for label, sink in (("stdout", out_sink), ("stderr", err_sink)):
-                sink.seek(0)
-                text = sink.read().decode("utf-8", "replace").strip()
-                if text:
-                    parts.append(f"{label}: {text}")
-            return " / ".join(parts)
-
-        try:
-            yield said
-        finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os.dup2(saved[0], 1)
-            os.dup2(saved[1], 2)
-            os.close(saved[0])
-            os.close(saved[1])
-
-
-#: How much of a library's chatter to put in an error message.  The last few
-#: lines are where the actual complaint is; the rest is its banner.
-_TAIL_LINES = 5
-
-
-def _tail(text: str, *, lines: int = _TAIL_LINES) -> str:
-    """The last few lines of what a library said, for an error message."""
-
-    return " | ".join(text.splitlines()[-lines:])
 
 
 def _pin_clearvoice_device() -> None:
@@ -209,7 +140,7 @@ class ClearerVoiceExtractor:
         self.model_name = model_name
         self.device = device
         _pin_clearvoice_device()
-        with _quiet() as said:
+        with quiet() as said:
             try:
                 self._model = ClearVoice(
                     task="target_speaker_extraction", model_names=[model_name]
@@ -247,14 +178,14 @@ class ClearerVoiceExtractor:
         # convention instead of to the comparison.
         call_dir = Path(tempfile.mkdtemp(prefix=f"{source.stem}-", dir=output_dir))
 
-        with _quiet() as said:
+        with quiet() as said:
             try:
                 self._call(source, call_dir)
             except Exception as error:  # noqa: BLE001 - report, do not swallow
                 raise TseError(
                     f"the extractor failed on {source.name}: "
                     f"{type(error).__name__}: {error}"
-                    + (f"; it said: {_tail(said())}" if said() else "")
+                    + (f"; it said: {tail(said())}" if said() else "")
                 ) from error
 
         # ``est_<n>.wav`` is the extracted speech, and it is the only output

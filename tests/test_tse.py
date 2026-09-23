@@ -20,16 +20,12 @@ import pytest
 from avannotate.audio.wav import read_info, read_window, slice_samples, write_pcm16
 from avannotate.faces.track import TrackDetection, Tracklet, TrackQuality
 from avannotate.interval import Interval
+from avannotate.quiet import tail
 from avannotate.segment import SegmentationConfig
 from avannotate.stages import s0_preprocess, s2_tracks, s3_cluster, s6_associate, s7_tse
 from avannotate.stages.base import StageContext
 from avannotate.tse.crop_video import crop_tile, iter_tiles, write_crop_video
-from avannotate.tse.model import (
-    ClearerVoiceExtractor,
-    TseError,
-    _tail,
-    build_extractor,
-)
+from avannotate.tse.model import ClearerVoiceExtractor, TseError, build_extractor
 from avannotate.tse.plan import (
     ExtractionSegment,
     context_window,
@@ -906,10 +902,10 @@ def test_a_tracked_face_with_no_output_is_still_an_error(tmp_path: Path) -> None
 
 _QUIET_PROBE = """
 import subprocess, sys
-from avannotate.tse.model import _quiet
+from avannotate.quiet import quiet
 
 print("ours: before")
-with _quiet() as said:
+with quiet() as said:
     print("library: a python-level print")
     subprocess.run(["sh", "-c", "echo 'library: a subprocess line' >&2"])
     captured = said()
@@ -992,4 +988,4 @@ def test_a_failing_extraction_carries_what_the_library_said(
 def test_the_tail_is_the_end_of_what_was_said() -> None:
     said = "\n".join(f"line {index}" for index in range(20))
 
-    assert _tail(said) == " | ".join(f"line {index}" for index in range(15, 20))
+    assert tail(said) == " | ".join(f"line {index}" for index in range(15, 20))
