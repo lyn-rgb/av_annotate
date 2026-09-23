@@ -104,6 +104,11 @@ class Qwen3VLCaptioner:
         # ``dtype`` rather than the older ``torch_dtype``, which is deprecated
         # as of 4.57: it still works and warns, and passing both would let the
         # deprecated one lose silently.
+        # Before the load, because the load is what needs to know: passing
+        # neither a device_map nor a `.to()` afterwards is what leaves it on the
+        # CPU.
+        device = resolve_device(device, device_map, cuda_available=torch.cuda.is_available())
+
         kwargs: dict[str, Any] = {"dtype": dtype or "auto"}
         if device_map:
             kwargs["device_map"] = device_map
@@ -160,6 +165,30 @@ class Qwen3VLCaptioner:
             trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
         return str(text).strip()
+
+
+def resolve_device(
+    requested: str | None, device_map: str | None, *, cuda_available: bool
+) -> str | None:
+    """Where to put the model, with ``None`` meaning "pick one".
+
+    Which is what ``None`` means in every other stage's config: S8 hands
+    ``"auto"`` to faster-whisper, S7 and S9 leave the choice to their libraries.
+    Here it meant the CPU, and silently -- ``from_pretrained`` with neither a
+    ``device_map`` nor a ``.to()`` afterwards loads to the CPU and stays there.
+
+    What that looks like from outside is not an error.  It is a card at zero,
+    nothing in its memory, and an eight-billion-parameter vision model reading
+    every frame of every shot on the CPU: found on a corpus the day the run
+    reached S10, with the estimated finish twenty-four hours away.
+
+    An explicit device is honoured even when it says ``cpu``, and a
+    ``device_map`` is a placement decision of its own that takes precedence.
+    """
+
+    if requested is not None or device_map is not None:
+        return requested
+    return "cuda" if cuda_available else None
 
 
 def build_captioner(config: Mapping[str, Any]) -> Captioner:

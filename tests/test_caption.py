@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from avannotate.caption.model import resolve_device
 from avannotate.caption.plan import (
     frames_for,
     global_sample,
@@ -601,3 +602,42 @@ def test_a_video_with_no_shots_writes_empty_outputs_without_loading_a_model(
     assert result.summary["shots"] == 0
     assert s10_caption.load_captions(context) == ()
     assert s10_caption.load_global_caption(context).caption == ""
+
+
+# --------------------------------------------------------------------------- #
+# where the model ends up
+# --------------------------------------------------------------------------- #
+#
+# `from_pretrained` with neither a `device_map` nor a `.to()` afterwards loads to
+# the CPU and stays there.  Nothing raises; the card is simply idle, and an 8B
+# vision model reads every frame of every shot on the processor.  Found on a
+# corpus the day the run reached S10, with an ETA of twenty-four hours.
+
+
+def test_a_null_device_means_pick_one() -> None:
+    """What `null` means in every other stage's config.
+
+    S8 hands `"auto"` to faster-whisper; S7 and S9 leave the choice to their
+    libraries.  This one used to read it as the CPU.
+    """
+
+    assert resolve_device(None, None, cuda_available=True) == "cuda"
+
+
+def test_a_null_device_on_a_machine_without_a_card_is_the_cpu() -> None:
+    assert resolve_device(None, None, cuda_available=False) is None
+
+
+def test_an_explicit_device_is_honoured(
+) -> None:
+    """Even when it says `cpu` -- that is a choice, not an omission."""
+
+    assert resolve_device("cpu", None, cuda_available=True) == "cpu"
+    assert resolve_device("cuda:1", None, cuda_available=True) == "cuda:1"
+
+
+def test_a_device_map_is_left_to_govern_placement() -> None:
+    """It is a placement decision of its own, and `.to()` afterwards would undo it."""
+
+    assert resolve_device(None, "auto", cuda_available=True) is None
+    assert resolve_device(None, "balanced", cuda_available=True) is None
