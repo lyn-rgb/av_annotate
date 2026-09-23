@@ -30,6 +30,7 @@ whose mistakes are invisible until a corpus is half-processed.
 
 from __future__ import annotations
 
+import glob
 import json
 import multiprocessing
 import os
@@ -42,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from avannotate.media import is_media_file
 from avannotate.progress import format_duration
 from avannotate.stages import STAGE_ORDER, get_stage
 from avannotate.stages.base import StageContext, StageError, load_config_file
@@ -66,7 +68,7 @@ STAGE_CONFIGS: dict[str, str | None] = {
 
 # A second ``VIDEO_SUFFIXES`` used to sit here, unused by anything.  It is gone
 # rather than left: the list it duplicates is the one that is *not* enough on
-# its own to decide whether a file is a video -- see ``cli.is_media_file`` -- and
+# its own to decide whether a file is a video -- see ``media.is_media_file`` -- and
 # a spare copy of it lying around is an invitation to write the check that
 # trusts it.
 
@@ -92,40 +94,96 @@ class Job:
         }
 
 
+def _exact(entry: str, roots: tuple[Path, ...]) -> Path | None:
+    """The entry itself, if a file by that name is there."""
+
+    for root in roots:
+        attempt = (root / entry).expanduser()
+        if attempt.is_file():
+            return attempt.resolve()
+    return None
+
+
+def _with_media_suffix(entry: str, roots: tuple[Path, ...]) -> tuple[Path, ...]:
+    """The media files the entry names once an extension is put on it.
+
+    The lists this reads are often dataset indices: they name a clip by its id
+    and leave the suffix to however the file was written to disk, so an entry
+    reads ``part_001/43/be/43bec54b...`` while the file is ``...43bec54b.mp4``.
+    The bare id is not a path to anything, and the error it produces -- "not
+    found, relative to ..." for every line at once -- sends the reader looking
+    for a missing file rather than for a missing ``.mp4``.
+
+    Filtered by the same predicate the directory scan uses, so a sidecar
+    ``._clip.mp4`` or a ``clip.json`` beside the video is not a candidate.
+    """
+
+    found: list[Path] = []
+    for root in roots:
+        attempt = (root / entry).expanduser()
+        if not attempt.parent.is_dir():
+            continue
+        for path in sorted(attempt.parent.glob(f"{glob.escape(attempt.name)}.*")):
+            if is_media_file(path):
+                resolved = path.resolve()
+                if resolved not in found:
+                    found.append(resolved)
+    return tuple(found)
+
+
 def read_video_list(path: Path, *, base: Path) -> tuple[Path, ...]:
     """The videos named by a list file, in order, without duplicates.
 
     Entries are resolved against the working directory first and the list's own
     directory second, because both conventions are in use and a wrong guess
-    would be an unhelpful "file not found" for every line at once.
+    would be an unhelpful "file not found" for every line at once.  An entry
+    that names no file by its exact name is tried again with a media extension
+    on it -- see :func:`_with_media_suffix`.
 
     A missing file is an error rather than a skip.  A silently short corpus is
-    the failure that looks like success.
+    the failure that looks like success.  So is an ambiguous one: an entry that
+    could be two files stops the run rather than picking one, because picking
+    one annotates a video nobody chose.
     """
 
+    roots = (base, path.parent)
     resolved: list[Path] = []
     seen: set[Path] = set()
     missing: list[str] = []
+    ambiguous: list[tuple[str, tuple[Path, ...]]] = []
 
     for line in path.read_text(encoding="utf-8").splitlines():
         entry = line.strip()
         if not entry or entry.startswith("#"):
             continue
-        for root in (base, path.parent):
-            attempt = (root / entry).expanduser()
-            if attempt.is_file():
-                candidate = attempt.resolve()
-                if candidate not in seen:
-                    seen.add(candidate)
-                    resolved.append(candidate)
-                break
-        else:
+
+        candidate = _exact(entry, roots)
+        if candidate is None:
+            options = _with_media_suffix(entry, roots)
+            if len(options) > 1:
+                ambiguous.append((entry, options))
+                continue
+            candidate = options[0] if options else None
+
+        if candidate is None:
             missing.append(entry)
+        elif candidate not in seen:
+            seen.add(candidate)
+            resolved.append(candidate)
+
+    if ambiguous:
+        entry, options = ambiguous[0]
+        names = ", ".join(item.name for item in options[:4])
+        raise FileNotFoundError(
+            f"{len(ambiguous)} entries of {path} name more than one media file: "
+            f"{entry} could be {names}. Name the one you mean."
+        )
 
     if missing:
         raise FileNotFoundError(
             f"{len(missing)} entries of {path} were not found, relative to {base} "
-            f"or {path.parent}: {', '.join(missing[:5])}"
+            f"or {path.parent} -- by name or with a media extension: "
+            f"{', '.join(missing[:5])}"
             + (" ..." if len(missing) > 5 else "")
         )
     return tuple(resolved)

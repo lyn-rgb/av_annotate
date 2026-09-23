@@ -24,8 +24,8 @@ from pathlib import Path
 import pytest
 
 from avannotate import model_cache
-from avannotate.cli import is_media_file
 from avannotate.ffmpeg import FFmpegError, video_encoder
+from avannotate.media import is_media_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DIR = REPO_ROOT / "data" / "examples"

@@ -15,7 +15,8 @@ from pathlib import Path
 import pytest
 
 from avannotate import cli
-from avannotate.cli import _read_inputs, is_media_file
+from avannotate.cli import _read_inputs
+from avannotate.media import is_media_file
 
 #: What a real sidecar starts with.  Not valid video of any kind.
 _APPLEDOUBLE = b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X        "

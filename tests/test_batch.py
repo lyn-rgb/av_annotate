@@ -102,6 +102,96 @@ def test_a_missing_entry_is_an_error_not_a_skip(tmp_path: Path) -> None:
         batch.read_video_list(listing, base=tmp_path)
 
 
+def test_an_entry_without_an_extension_finds_the_video(
+    tmp_path: Path,
+) -> None:
+    """The lists are dataset indices: they name a clip by its id.
+
+    ``part_001/43/be/43bec54b...`` is not a path to anything until something
+    supplies the ``.mp4``, and without this the error for every line at once
+    reads as a missing file rather than a missing extension.
+    """
+
+    (tmp_path / "part_001" / "43" / "be").mkdir(parents=True)
+    _video(tmp_path / "part_001" / "43" / "be", "43bec54b.mp4")
+    listing = tmp_path / "list.txt"
+    listing.write_text("part_001/43/be/43bec54b\n", encoding="utf-8")
+
+    found = batch.read_video_list(listing, base=tmp_path)
+
+    assert [item.name for item in found] == ["43bec54b.mp4"]
+
+
+def test_an_exact_name_still_wins(tmp_path: Path) -> None:
+    """The extension is a fallback, not a replacement.
+
+    A file with no extension at all, beside one that has it, still resolves to
+    the one that was named -- nothing that worked before works differently now.
+    """
+
+    _video(tmp_path, "clip")
+    _video(tmp_path, "clip.mp4")
+    listing = tmp_path / "list.txt"
+    listing.write_text("clip\n", encoding="utf-8")
+
+    found = batch.read_video_list(listing, base=tmp_path)
+
+    assert [item.name for item in found] == ["clip"]
+
+
+def test_a_non_media_sibling_is_not_a_candidate(tmp_path: Path) -> None:
+    """A ``clip.json`` beside ``clip.mp4`` must not make the entry ambiguous."""
+
+    _video(tmp_path, "clip.mp4")
+    (tmp_path / "clip.json").write_text("{}", encoding="utf-8")
+    listing = tmp_path / "list.txt"
+    listing.write_text("clip\n", encoding="utf-8")
+
+    found = batch.read_video_list(listing, base=tmp_path)
+
+    assert [item.name for item in found] == ["clip.mp4"]
+
+
+def test_a_sidecar_is_not_a_candidate_either(tmp_path: Path) -> None:
+    """The AppleDouble rule, applied to the fallback as well as to a scan."""
+
+    _video(tmp_path, "clip.mp4")
+    _video(tmp_path, "._clip.mp4")
+    listing = tmp_path / "list.txt"
+    listing.write_text("clip\n", encoding="utf-8")
+
+    assert [item.name for item in batch.read_video_list(listing, base=tmp_path)] == [
+        "clip.mp4"
+    ]
+
+
+def test_two_media_files_for_one_entry_is_an_error(tmp_path: Path) -> None:
+    """Picking one would annotate a video nobody chose.
+
+    The list said ``clip`` and there is a ``clip.mp4`` and a ``clip.mkv``; there
+    is no reading of the entry that says which.  Stopping is the only answer
+    that does not risk a corpus full of the wrong files.
+    """
+
+    _video(tmp_path, "clip.mp4")
+    _video(tmp_path, "clip.mkv")
+    listing = tmp_path / "list.txt"
+    listing.write_text("clip\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="more than one media file"):
+        batch.read_video_list(listing, base=tmp_path)
+
+
+def test_a_missing_entry_says_the_extension_was_tried(tmp_path: Path) -> None:
+    """Or the reader goes looking for a file that is there under another name."""
+
+    listing = tmp_path / "list.txt"
+    listing.write_text("part_001/43/be/nope\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="with a media extension"):
+        batch.read_video_list(listing, base=tmp_path)
+
+
 # --------------------------------------------------------------------------- #
 # planning
 # --------------------------------------------------------------------------- #
