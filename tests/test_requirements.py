@@ -268,3 +268,95 @@ def test_every_declared_stage_is_checked_by_default() -> None:
 
     assert [status.stage for status in statuses] == list(available_stages())
     assert all(isinstance(status.ready, bool) for status in statuses)
+
+
+# --------------------------------------------------------------------------- #
+# onnxruntime without a card
+# --------------------------------------------------------------------------- #
+#
+# `onnxruntime` and `onnxruntime-gpu` are the same import, the same
+# `InferenceSession` and the same version string.  A session asked for the CUDA
+# provider falls back to the CPU one without failing, so the only way a person
+# finds out is by measuring -- days into a corpus.  These are the checks that
+# say it out loud instead.
+
+
+class _Ort:
+    """A stand-in for the onnxruntime module, with the providers it offers."""
+
+    __version__ = "1.99"
+
+    def __init__(self, providers: list[str]) -> None:
+        self._providers = providers
+
+    def get_available_providers(self) -> list[str]:
+        return list(self._providers)
+
+
+def _with_onnx(monkeypatch: pytest.MonkeyPatch, providers: list[str] | None) -> None:
+    import sys
+
+    if providers is None:
+        monkeypatch.setitem(sys.modules, "onnxruntime", None)
+        monkeypatch.delitem(sys.modules, "onnxruntime", raising=False)
+        return
+    monkeypatch.setitem(sys.modules, "onnxruntime", _Ort(providers))
+
+
+def _requirement(**kwargs: object) -> Requirement:
+    return Requirement(stage="s1-faces", needs_onnx_cuda=True, **kwargs)  # type: ignore[arg-type]
+
+
+def test_a_cpu_only_onnxruntime_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_onnx(monkeypatch, ["CPUExecutionProvider"])
+
+    complaint = _requirement().onnx_without_cuda()
+
+    assert complaint is not None
+    assert "CPU" in complaint
+    assert "ten times slower" in complaint
+
+
+def test_a_cuda_onnxruntime_is_not_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guards the guard: a false alarm here would send somebody reinstalling a
+    working install."""
+
+    _with_onnx(monkeypatch, ["TensorrtExecutionProvider", "CUDAExecutionProvider",
+                             "CPUExecutionProvider"])
+
+    assert _requirement().onnx_without_cuda() is None
+
+
+def test_a_stage_that_does_not_need_a_card_is_never_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _with_onnx(monkeypatch, ["CPUExecutionProvider"])
+
+    assert Requirement(stage="s3-cluster").onnx_without_cuda() is None
+
+
+def test_a_missing_onnxruntime_is_left_to_the_module_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One problem, said once: the install line already covers it."""
+
+    import sys
+
+    # None in sys.modules makes the import raise ModuleNotFoundError, which is
+    # what a machine without the package does -- as close as a test gets to
+    # that without uninstalling it.
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
+
+    assert _requirement().onnx_without_cuda() is None
+
+
+def test_the_stages_marked_for_it_are_the_ones_with_onnxruntime() -> None:
+    """A stage that gains an onnxruntime model and does not say so is a stage
+    that will be found out ten times too late."""
+
+    marked = {item.stage for item in REQUIREMENTS if item.needs_onnx_cuda}
+
+    assert "s1-faces" in marked
+    for item in REQUIREMENTS:
+        if item.needs_onnx_cuda:
+            assert "onnxruntime" in item.modules, f"{item.stage} is marked but has no onnxruntime"

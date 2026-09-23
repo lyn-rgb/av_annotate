@@ -51,6 +51,10 @@ for argument in "$@"; do
 @STAGES@LIST
         exit 0
     fi
+    if [[ "$argument" == "doctor" ]]; then
+        printf 'ready    s0-preprocess          no model needed\n'
+        exit "${DOCTOR_STATUS:-0}"
+    fi
     if [[ "$argument" == "report" ]]; then
         printf 'videos    3 (3 ok, 0 failed)\n'
         exit "${REPORT_STATUS:-0}"
@@ -267,3 +271,31 @@ def test_a_corpus_with_failures_fails_the_script(corpus: _Corpus) -> None:
 
 def test_a_clean_corpus_exits_zero(corpus: _Corpus) -> None:
     assert corpus.run().returncode == 0
+
+
+def test_the_doctor_is_asked_before_anything_starts(corpus: _Corpus) -> None:
+    """It exists for this question and nobody runs it by hand.
+
+    A machine that will quietly do a stage's work on the CPU is found here or
+    after the pass it wasted -- and the pass is hours.
+    """
+
+    result = corpus.run("--dry-run")
+
+    assert "doctor" in _plain(result.stdout)
+    assert "ready    s0-preprocess" in _plain(result.stdout)
+
+
+def test_an_unhappy_doctor_is_shown_but_does_not_stop_the_run(corpus: _Corpus) -> None:
+    """Some videos failing is normal; every video failing is a broken stage.
+
+    The doctor's verdict is advice.  A stage that cannot run at all stops the
+    run by itself, one stage in; a stage that can run slowly is a cost the
+    operator is allowed to accept.
+    """
+
+    result = corpus.run(DOCTOR_STATUS="1")
+
+    assert result.returncode == 0, "the run should have proceeded"
+    assert "the doctor is unhappy" in _plain(result.stdout)
+    assert "s4-diarize.log" in corpus.logs()

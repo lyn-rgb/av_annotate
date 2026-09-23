@@ -126,6 +126,22 @@ done
 printf '  logs      %s/\n' "$LOGS"
 printf '  combined  %s/run.log\n\n' "$OUTPUT"
 
+# The doctor, once, for the stages this run will actually attempt.  It exists
+# for exactly this question and nobody runs it by hand -- which is how a machine
+# that will quietly do a stage's work on the CPU gets found after the pass it
+# wasted instead of before it.  Shown rather than enforced: a stage that cannot
+# run at all stops the run on its own (see the abort below), and a stage that
+# can run slowly is a cost the operator is allowed to accept.
+doc_args=()
+for stage in "${plan[@]}"; do doc_args+=(--stage "$stage"); done
+printf '\033[1mdoctor\033[0m  for %d stage(s)\n' "${#plan[@]}"
+set +e
+"$PYTHON" -m avannotate.cli doctor "${doc_args[@]}"
+doctor_status=$?
+set -e
+(( doctor_status == 0 )) || printf '\n\033[33mthe doctor is unhappy -- read the lines above before leaving this running\033[0m\n'
+printf '\n'
+
 if (( DRY_RUN )); then
     # The stage plan above is this script's; the video count is the batch's, and
     # it is the half that catches a list naming files nothing can find.  Asking

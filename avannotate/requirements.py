@@ -79,6 +79,45 @@ class Requirement:
     weights_hint: str = ""
     #: Shown when the stage is ready, so a reader can see *what* was found.
     note: str = ""
+    #: Whether this stage's onnxruntime models have to reach a card to be worth
+    #: running.  See :meth:`onnx_without_cuda` for why this is its own check.
+    needs_onnx_cuda: bool = False
+
+    def onnx_without_cuda(self) -> str | None:
+        """onnxruntime is installed and will run these models on the CPU.
+
+        The most expensive thing that can be quietly wrong here.
+        ``onnxruntime`` and ``onnxruntime-gpu`` are the same import, the same
+        ``InferenceSession`` and the same version string; what differs is
+        whether ``CUDAExecutionProvider`` is among the ones they offer.  A
+        session asked for ``["CUDAExecutionProvider", "CPUExecutionProvider"]``
+        does not fail when it is not there -- it takes the second and says
+        nothing.  The stage then runs about ten times slower with a card idle,
+        and nothing in its outputs distinguishes that from the normal case.
+
+        Checked here or nowhere, then.  A warning rather than a failure: a
+        machine with no card at all is a legitimate place to run this, and it is
+        not the doctor's business to refuse it -- only to say what it costs.
+        """
+
+        if not self.needs_onnx_cuda:
+            return None
+        try:
+            import onnxruntime
+        except ModuleNotFoundError:
+            # Reported as a missing module; one problem, said once.
+            return None
+        available = set(onnxruntime.get_available_providers())
+        if "CUDAExecutionProvider" in available:
+            return None
+        version = getattr(onnxruntime, "__version__", "?")
+        return (
+            f"onnxruntime {version} offers {', '.join(sorted(available))} and no "
+            "CUDAExecutionProvider: this stage's models run on the CPU, about ten "
+            "times slower, with any card idle. onnxruntime-gpu needs a cuDNN "
+            "matching the CUDA it was built for, and installing it without that "
+            "gives an install that works and does not say so."
+        )
 
     def _resolved(self, config: Mapping[str, object], key: str) -> Path | None:
         value = config.get(key)
@@ -129,6 +168,10 @@ REQUIREMENTS: tuple[Requirement, ...] = (
         modules=("insightface", "onnxruntime"),
         install="pip install 'avannotate[faces]'",
         note="insightface for identity vectors; S3 refuses to run without them",
+        # SCRFD detection and ArcFace embeddings, once per sampled frame of
+        # every video in the corpus -- the stage where a CPU fallback costs
+        # days rather than minutes.
+        needs_onnx_cuda=True,
     ),
     Requirement(
         stage="s4-diarize",
@@ -292,8 +335,16 @@ def check(
         if unset_weights:
             todo.append(f"provide: {requirement.weights_hint or requirement.weights}")
 
+        # Ready, but on the CPU.  Reported in the detail rather than as a
+        # failure, so that the stage runs and the operator is told what it will
+        # cost -- and said here because the detail is printed for a ready stage
+        # too, which is the only place this would be seen before a corpus is
+        # half-processed.
+        slow = requirement.onnx_without_cuda()
+
         if not absent and not unset_weights and not no_checkout:
-            statuses.append(Status(stage=stage, ready=True, detail=requirement.note))
+            detail = "; ".join(part for part in (requirement.note, slow) if part)
+            statuses.append(Status(stage=stage, ready=True, detail=detail))
             continue
 
         parts: list[str] = []
@@ -303,6 +354,8 @@ def check(
             parts.append(no_checkout)
         if unset_weights:
             parts.append("weights: " + "; ".join(unset_weights))
+        if slow:
+            parts.append(slow)
         statuses.append(
             Status(stage=stage, ready=False, detail="; ".join(parts), todo=tuple(todo))
         )

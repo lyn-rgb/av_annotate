@@ -97,6 +97,9 @@ module = [
     "torch.*",
     "torchaudio",
     "insightface.*",
+    # Checked for its providers rather than imported for a model -- see
+    # requirements.Requirement.onnx_without_cuda.
+    "onnxruntime",
     "clearvoice.*",
     "faster_whisper.*",
     "funasr.*",
