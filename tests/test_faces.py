@@ -183,7 +183,7 @@ def test_read_frame_returns_an_image_and_none_past_the_end(single_shot_video: Pa
     assert read_frame(single_shot_video, width=info.width, height=info.height, time=999.0) is None
 
 
-@pytest.mark.parametrize("decoder", ["read", "sampled", "window"])
+@pytest.mark.parametrize("decoder", ["read", "sampled", "window", "frames"])
 def test_a_scaled_decode_is_not_the_top_strip_of_the_frame(
     single_shot_video: Path, decoder: str
 ) -> None:
@@ -206,6 +206,20 @@ def test_a_scaled_decode_is_not_the_top_strip_of_the_frame(
     """
 
     def decode(width: int, height: int) -> np.ndarray:
+        if decoder == "frames":
+            # The decoder S1 uses, and the one this test did not cover -- which
+            # is the whole reason its missing `scale` went unnoticed.  One frame
+            # is enough: the strip is visible in the first one.
+            frames = list(
+                iter_frames(
+                    single_shot_video,
+                    width=width,
+                    height=height,
+                    sampling=FrameSampling(stride=1),
+                    frame_count=1,
+                )
+            )
+            return np.asarray(frames[0][1])
         if decoder == "read":
             frame = read_frame(single_shot_video, width=width, height=height, time=1.0)
             assert frame is not None

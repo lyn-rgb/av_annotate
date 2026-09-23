@@ -71,7 +71,7 @@ class FrameSampling:
         return tuple(range(0, frame_count, self.stride))
 
 
-def _decode_command(source: Path, *, stride: int) -> list[str]:
+def _decode_command(source: Path, *, stride: int, width: int, height: int) -> list[str]:
     return [
         find_ffmpeg(),
         "-v",
@@ -82,7 +82,11 @@ def _decode_command(source: Path, *, stride: int) -> list[str]:
         "-an",
         "-sn",
         "-vf",
-        f"select='not(mod(n\\,{stride}))'",
+        # The scale is what the comment above is about, and this was the one
+        # decoder that did not pass it -- S1 asks for the video's own size, so
+        # the omission was invisible, and any future caller asking for another
+        # size would have got the top strip of the picture wrapped into it.
+        f"select='not(mod(n\\,{stride}))',scale={width}:{height}",
         # Without passthrough ffmpeg re-times the selected frames to a constant
         # rate and duplicates them, and the count no longer matches the indices.
         "-fps_mode",
@@ -124,7 +128,7 @@ def iter_frames(
         raise ValueError(f"invalid frame size {width}x{height}")
 
     process = subprocess.Popen(
-        _decode_command(source, stride=sampling.stride),
+        _decode_command(source, stride=sampling.stride, width=width, height=height),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
