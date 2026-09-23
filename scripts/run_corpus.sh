@@ -118,8 +118,9 @@ OUTPUT="$(cd "$OUTPUT" && pwd)"
 LOGS="$OUTPUT/logs"
 mkdir -p "$LOGS"
 
+if [[ -n "$WORKERS" ]]; then at_a_time="$WORKERS videos"; else at_a_time="one per GPU"; fi
 printf '\033[1mavannotate — stage-major\033[0m  %d stages, %s at a time\n' \
-    "${#plan[@]}" "${WORKERS:+$WORKERS videos}${WORKERS:-one per GPU}"
+    "${#plan[@]}" "$at_a_time"
 for i in "${!plan[@]}"; do
     printf '  %2d/%d  %s\n' "$((i + 1))" "${#plan[@]}" "${plan[$i]}"
 done

@@ -61,6 +61,10 @@ for argument in "$@"; do
     fi
 done
 
+if [[ -n "${STUB_ARGS_FILE:-}" ]]; then
+    printf '%s\n' "$@" >> "$STUB_ARGS_FILE"
+fi
+
 stage=""
 previous=""
 for argument in "$@"; do
@@ -299,3 +303,36 @@ def test_an_unhappy_doctor_is_shown_but_does_not_stop_the_run(corpus: _Corpus) -
     assert result.returncode == 0, "the run should have proceeded"
     assert "the doctor is unhappy" in _plain(result.stdout)
     assert "s4-diarize.log" in corpus.logs()
+
+
+def test_every_flag_the_driver_forwards_is_one_the_batch_accepts(corpus: _Corpus) -> None:
+    """The bug this is for: `--force` was forwarded by the driver and had never
+    been accepted by `run_batch.sh`, so using it did not force a re-run -- it
+    stopped the run with `unknown argument` and an exit code of 2.
+
+    Nothing caught it because no test ever passed the flag.  Both scripts are
+    invoked for real here, so a flag one of them does not know is a failure and
+    not a silent no-op.
+    """
+
+    arguments = corpus.root / "args.txt"
+    result = corpus.run("--force", "--verbose", STUB_ARGS_FILE=str(arguments))
+
+    assert "unknown argument" not in _plain(result.stderr)
+    assert result.returncode == 0, _plain(result.stderr)
+
+
+def test_force_reaches_the_batch_rather_than_being_swallowed(corpus: _Corpus) -> None:
+    arguments = corpus.root / "args.txt"
+    corpus.run("--force", STUB_ARGS_FILE=str(arguments))
+
+    handed = arguments.read_text(encoding="utf-8").split()
+
+    assert "--force" in handed
+
+
+def test_verbose_reaches_the_batch_too(corpus: _Corpus) -> None:
+    arguments = corpus.root / "args.txt"
+    corpus.run("--verbose", STUB_ARGS_FILE=str(arguments))
+
+    assert "--verbose" in arguments.read_text(encoding="utf-8").split()

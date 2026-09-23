@@ -11,6 +11,7 @@
 #   --gpus LIST      comma-separated device indices (default: detect them)
 #   --workers N      videos at once (default: one per GPU, or 1 with none)
 #   --only-missing   skip videos that already have a deliverable
+#   --force          re-run even where the stage's outputs are current
 #   --verbose        a line per stage rather than per video
 #   --dry-run        resolve the list and report the plan, without running
 #
@@ -73,6 +74,7 @@ STAGES=""
 GPUS=""
 WORKERS=""
 ONLY_MISSING=0
+FORCE=0
 VERBOSE=0
 DRY_RUN=0
 
@@ -84,10 +86,11 @@ while [[ $# -gt 0 ]]; do
         --stages) STAGES="$2"; shift 2 ;;
         --gpus) GPUS="$2"; shift 2 ;;
         --workers) WORKERS="$2"; shift 2 ;;
+        --force) FORCE=1; shift ;;
         --only-missing) ONLY_MISSING=1; shift ;;
         --verbose|-v) VERBOSE=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
-        -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -162,6 +165,7 @@ fi
 [[ -n "$GPUS" ]] && ARGS+=(--gpus "$GPUS")
 [[ -n "$WORKERS" ]] && ARGS+=(--workers "$WORKERS")
 (( DRY_RUN )) && ARGS+=(--dry-run)
+(( FORCE )) && ARGS+=(--force)
 (( ONLY_MISSING )) && ARGS+=(--only-missing)
 (( VERBOSE )) && ARGS+=(--verbose)
 
