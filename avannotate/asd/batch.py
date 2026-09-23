@@ -14,6 +14,7 @@ from collections.abc import Sequence
 import numpy as np
 from numpy.typing import NDArray
 
+from avannotate import threads
 from avannotate.asd.crop import CROP_SIZE, crop_box
 from avannotate.asd.types import Window
 from avannotate.faces.track import Tracklet
@@ -76,6 +77,7 @@ def read_faces(
         )
 
     import cv2
+    threads.cap_opencv()
 
     tiles = np.zeros((len(frames), size, size), dtype=np.uint8)
     for index, (frame, box) in enumerate(zip(frames, boxes, strict=True)):

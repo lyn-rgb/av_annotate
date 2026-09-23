@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from avannotate import threads
 from avannotate.faces.types import Detection, Frame
 
 #: Where OpenCV publishes the YuNet ONNX model.  Pinned to a dated release
@@ -80,6 +81,7 @@ class YuNetDetector:
             )
         try:
             import cv2
+            threads.cap_opencv()
         except ModuleNotFoundError as error:
             raise DetectorError(
                 "OpenCV is required for the YuNet detector: pip install opencv-python-headless"

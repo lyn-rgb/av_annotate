@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from avannotate import threads
 from avannotate.coercion import coerce_number
 from avannotate.faces.cluster import DEFAULT_MAX_DISTANCE, cluster_vectors
 from avannotate.faces.track import TrackDetection, Tracklet, TrackQuality
@@ -106,6 +107,7 @@ def write_reference_frames(
     """
 
     import cv2
+    threads.cap_opencv()
 
     from avannotate.asd.crop import crop_box
     from avannotate.faces.frames import read_frame

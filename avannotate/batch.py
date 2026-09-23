@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from avannotate import threads
 from avannotate.media import is_media_file
 from avannotate.progress import format_duration
 from avannotate.stages import STAGE_ORDER, get_stage, s11_compose
@@ -609,6 +610,11 @@ def _worker_init(
     gpu = assignments[index % len(assignments)] if assignments else None
     if gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+
+    # Before anything heavy is imported, which is the only moment it can be
+    # done: the numeric libraries read these once, at import, and a pool that
+    # already exists does not care what the environment says afterwards.
+    threads.cap(len(assignments))
     _WORKER = _Worker(
         queue=queue_, config_root=Path(config_root), stages=stages, force=force
     )

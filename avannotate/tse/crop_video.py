@@ -35,6 +35,7 @@ from typing import IO
 import numpy as np
 from numpy.typing import NDArray
 
+from avannotate import threads
 from avannotate.asd.crop import crop_box
 from avannotate.faces.frames import iter_window_frames
 from avannotate.faces.types import Frame
@@ -77,6 +78,7 @@ def crop_tile(
         return tile
 
     import cv2
+    threads.cap_opencv()
 
     return np.asarray(
         cv2.resize(patch, (size, size), interpolation=cv2.INTER_LINEAR), dtype=np.uint8
