@@ -81,6 +81,8 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/report.py` | what a corpus run produced, read back off the disk |
 | `avannotate/batch.py` | planning, pools, and the progress a watcher sees |
 | `avannotate/cli.py` | `run`, `batch`, `report`, `doctor`, `stages` |
+| `scripts/run_corpus.sh` | the driver: one stage over the corpus, then the next |
+| `scripts/export_faces.py` | a crop video per person, from what a run already recorded |
 
 Everything except the detector call itself is pure Python over JSON, which is
 what makes it testable without a model or a GPU.
@@ -319,6 +321,35 @@ which is asked once at the end and answers for the corpus. (Not the batch's own
 exit code: each stage invocation exits non-zero when anything failed, so keying
 the driver on that would stop a thousand-video run because one video could not
 get through S3.)
+
+#### Cropped faces, after the fact
+
+The plan drew `faces/F001/crops/` as an S2 artifact and nothing ever wrote it:
+S2 records boxes, and this pipeline crops from the source on demand — S5 for its
+windows, S7 for its extractor, each into scratch and gone. So the crops were
+never missing from a *run*, only from the *result*. When this was noticed the
+corpus was already finished, and re-running was not on the table.
+
+```bash
+scripts/export_faces.py --output /results --workers 16
+```
+
+One crop video per person at `work/<video>/faces/F001.mp4`, over the whole span
+that person appears in. It needs no model: the boxes are in `s2-tracks/`, who
+they belong to is in `s3-cluster/`, and the source's path and frame rate are in
+the deliverable's own `annotation.json`. It re-cuts with ffmpeg through the same
+two helpers S7 uses, so the face is followed across a camera pan the same way.
+
+**A gap keeps its timing rather than being cut out**, so a seek in the crop
+means the same instant as a seek in the source. What it *looks* like is the one
+choice: by default a frame the tracker had no sighting in is black, because
+thirty seconds of the last known position reads as content and is not.
+`--fill-gaps` holds the last known box instead, which is what S7 hands the
+extractor — the right choice when the crop is going into another model rather
+than being looked at.
+
+Existing crops are left alone, so it is safe to re-run; `--videos` and `--limit`
+narrow it to a few for a look first.
 
 `index.jsonl` is still written — one record per video with a per-stage timing
 breakdown — and it is where to look for "which stage is actually costing me".

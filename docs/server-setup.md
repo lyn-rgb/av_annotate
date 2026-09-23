@@ -817,6 +817,12 @@ indices that name a clip by its id and leave the extension to disk, so
 with each media extension on it. One match or none; two candidates is an error
 rather than a guess.
 
+**The per-person crop videos are not kept.** S7 cuts one per person per
+segment for the extractor, uses it, and deletes it; `keep_crops: true` in its
+config keeps them instead, at the cost of re-running S7. If the corpus has
+already finished, `scripts/export_faces.py` rebuilds one crop video per person
+from the boxes that are already on disk — no model, no re-run.
+
 **S7 needs its working directory to be writable.** ClearerVoice reads its
 checkpoint from `checkpoints/` *relative to the process's working directory*,
 with no argument to override it, and `run_batch.sh` runs from the data root
