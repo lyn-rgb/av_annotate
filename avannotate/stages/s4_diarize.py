@@ -49,6 +49,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s4-diarize"
+#: DiariZen, on torch.
+USES_GPU = True
 VERSION = "s4-v1"
 
 TURNS_NAME = "turns.jsonl"

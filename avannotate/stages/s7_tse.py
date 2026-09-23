@@ -75,6 +75,8 @@ from avannotate.tse.plan import (
 )
 
 STAGE = "s7-tse"
+#: ClearerVoice picks its own device, but it is torch underneath.
+USES_GPU = True
 VERSION = "s7-v1"
 
 SEGMENTS_NAME = "segments.json"

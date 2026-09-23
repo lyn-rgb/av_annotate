@@ -292,8 +292,29 @@ def detect_gpus() -> tuple[int, ...]:
     return ()
 
 
+#: How many videos at once for a run of stages that use no card.
+#:
+#: Sixteen rather than "one per core": the stages this applies to are not all
+#: pure arithmetic.  S0 and S2 spend their time in ffmpeg, which is threaded
+#: already, and sixteen of those on one machine contend for the same cores and
+#: the same disk.  Sixteen is the operator's number, from a corpus where the
+#: non-GPU stages were the machine's idle time; `--workers` overrides it, and
+#: should, if a measurement says otherwise.
+CPU_WORKERS = 16
+
+
+def cpu_workers() -> int:
+    """``CPU_WORKERS``, but never more processes than there are cores.
+
+    Asking for sixteen on an eight-core box is not parallelism, it is context
+    switching plus sixteen copies of the same imports.
+    """
+
+    return min(CPU_WORKERS, os.cpu_count() or 1)
+
+
 def plan_workers(
-    *, gpus: tuple[int, ...], requested: int | None
+    *, gpus: tuple[int, ...], requested: int | None, cpu_only: bool = False
 ) -> tuple[tuple[int, ...], int]:
     """How many videos to run at once, and on which devices.
 
@@ -301,12 +322,20 @@ def plan_workers(
     because it is occasionally right -- a stage that is waiting on the CPU, or
     a card with room to spare -- but it is not the default: every adapter loads
     its own model, so two workers on one card swap weights for every video.
+
+    ``cpu_only`` is for a run of stages that none of which touch a card: the
+    count of cards is then not a reason for anything, and the default becomes
+    :data:`CPU_WORKERS` instead.  That is the whole point of the distinction.
+    S0 is the clearest case -- four workers on one machine's ffmpeg and disk,
+    with four idle cards watching -- and the fix is more workers, not fewer.
     """
 
     if requested is not None:
         if requested < 1:
             raise ValueError(f"--workers must be at least 1, got {requested}")
         return gpus, requested
+    if cpu_only:
+        return gpus, cpu_workers()
     if gpus:
         return gpus, len(gpus)
     return (), 1

@@ -61,6 +61,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s8-asr"
+#: faster-whisper, which runs on the card when it can see one.
+USES_GPU = True
 VERSION = "s8-v1"
 
 TRANSCRIPTS_NAME = "transcripts.json"

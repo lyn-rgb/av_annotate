@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from avannotate.stages import available_stages, get_stage, uses_gpu
 from avannotate.stages.base import (
     Artifact,
     StageRecord,
@@ -161,3 +162,45 @@ def test_record_status_round_trips(tmp_path: Path, status: str) -> None:
         stage="s0", status=status, code_version="v1", config_hash="c", input_hash="i"
     )
     assert StageRecord.from_dict(record.to_dict()).status == status
+
+
+# --------------------------------------------------------------------------- #
+# what each stage runs on
+# --------------------------------------------------------------------------- #
+#
+# `USES_GPU` decides how many videos run at once: one worker per card for a
+# stage that uses one, sixteen for a stage that does not.  The failure it
+# guards against is silent and expensive -- a stage that forgot to declare
+# itself gets the GPU answer by default, and the corpus runs at a quarter of
+# the speed it could with nothing to show for it.
+
+#: The stages whose work is arithmetic, ffmpeg, or both.
+_CPU_STAGES = frozenset(
+    {"s0-preprocess", "s2-tracks", "s3-cluster", "s6-associate", "s11-compose"}
+)
+
+
+def test_every_implemented_stage_declares_what_it_runs_on() -> None:
+    for name in available_stages():
+        module = get_stage(name)
+        assert hasattr(module, "USES_GPU"), f"{name} does not say whether it uses a GPU"
+        assert isinstance(module.USES_GPU, bool), f"{name}'s USES_GPU is not a bool"
+
+
+def test_the_stages_that_use_no_card_are_the_ones_that_use_no_card() -> None:
+    """Not a tautology: it is the list the defaults are sized from.
+
+    Flipping a stage here by mistake does not fail anything visibly -- it just
+    sizes its pool wrongly, which is four videos at a time instead of sixteen,
+    or the other way round.
+    """
+
+    cpu = {name for name in available_stages() if not uses_gpu(name)}
+
+    assert cpu == _CPU_STAGES
+
+
+def test_an_unknown_stage_is_assumed_to_want_a_card() -> None:
+    """Nobody has described its work, so nothing should size a pool for it."""
+
+    assert uses_gpu("s99-nonsense") is True

@@ -58,6 +58,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s10-caption"
+#: the VLM -- the reason this pipeline wants a big card at all.
+USES_GPU = True
 VERSION = "s10-v1"
 
 CAPTIONS_NAME = "captions.json"

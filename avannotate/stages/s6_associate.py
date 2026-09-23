@@ -60,6 +60,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s6-associate"
+#: arithmetic over the tracks; no model at all.
+USES_GPU = False
 VERSION = "s6-v1"
 
 ASSIGNMENTS_NAME = "assignments.json"

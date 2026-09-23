@@ -70,6 +70,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s9-paralinguistic"
+#: emotion2vec and the taggers, on torch and onnxruntime.
+USES_GPU = True
 VERSION = "s9-v1"
 
 TAGS_NAME = "tags.json"

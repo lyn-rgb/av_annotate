@@ -15,7 +15,12 @@ from pathlib import Path
 from avannotate import progress as progress_module
 from avannotate import requirements
 from avannotate.media import VIDEO_SUFFIXES, is_media_file
-from avannotate.stages import STAGE_ORDER, available_stages, get_stage
+from avannotate.stages import (
+    STAGE_ORDER,
+    available_stages,
+    get_stage,
+    uses_gpu,
+)
 from avannotate.stages.base import StageContext, StageError, load_config_file
 
 
@@ -136,7 +141,13 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     if gpus is None:
         print("gpus      detecting", flush=True)
         gpus = batch_module.detect_gpus()
-    devices, workers = batch_module.plan_workers(gpus=gpus, requested=args.workers)
+    # A run of stages that none of which touch a card is sized by cores rather
+    # than by cards -- the driver runs one stage at a time precisely so this
+    # can be true of S0, S2, S3, S6 and S11.
+    cpu_only = not any(uses_gpu(name) for name in stages)
+    devices, workers = batch_module.plan_workers(
+        gpus=gpus, requested=args.workers, cpu_only=cpu_only
+    )
 
     if args.only_missing:
         jobs = tuple(job for job in jobs if not batch_module.is_complete(job))
@@ -148,10 +159,16 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     print(f"stages    {', '.join(stages)}")
     print(f"configs   {config_root}")
     print(f"output    {output}")
-    print(
-        f"workers   {workers}"
-        + (f"  on GPUs {', '.join(str(item) for item in devices)}" if devices else "  on CPU")
-    )
+    # "16 workers on GPUs 0,1,2,3" would be a strange thing to print for a run
+    # that will not touch them, and it is the line an operator reads to check
+    # that the sizing came out how they meant.
+    if cpu_only:
+        placement = "  (no stage here uses a GPU)"
+    elif devices:
+        placement = f"  on GPUs {', '.join(str(item) for item in devices)}"
+    else:
+        placement = "  on CPU"
+    print(f"workers   {workers}{placement}")
     print(flush=True)
 
     if args.dry_run:

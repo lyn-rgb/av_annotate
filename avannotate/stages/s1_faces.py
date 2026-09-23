@@ -64,6 +64,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s1-faces"
+#: onnxruntime, preferring its CUDA provider.
+USES_GPU = True
 VERSION = "s1-v1"
 
 DETECTIONS_NAME = "detections.jsonl"

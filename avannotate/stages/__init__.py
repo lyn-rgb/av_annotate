@@ -33,6 +33,16 @@ class Stage(Protocol):
 
     STAGE: str
     VERSION: str
+    #: Whether this stage's work happens on a graphics card.
+    #:
+    #: Not a dependency -- every stage here falls back to the CPU, badly.  It
+    #: is what the batch sizes its pool by: a stage that uses a card gets one
+    #: worker per card, because two workers on one card swap weights for every
+    #: video; a stage that does not gets a pool sized by cores, because the
+    #: cards have nothing to do with how fast it goes.  Getting it wrong is not
+    #: a crash either way -- it is a corpus that takes longer than it needed
+    #: to, quietly, which is why it is declared rather than guessed.
+    USES_GPU: bool
 
     def run(self, context: StageContext, *, force: bool = False) -> StageRun: ...
 
@@ -74,6 +84,18 @@ def available_stages() -> tuple[str, ...]:
     return tuple(name for name in STAGE_ORDER if name in _MODULES)
 
 
+def uses_gpu(name: str) -> bool:
+    """Whether this stage's work happens on a card.  Unknown stages say yes.
+
+    The conservative answer for a name that is not in the pipeline: a mistyped
+    stage is a bug to be reported elsewhere, and claiming it does not want a
+    card would size a pool for work nobody has described.
+    """
+
+    module = _MODULES.get(name)
+    return True if module is None else bool(getattr(module, "USES_GPU", True))
+
+
 def get_stage(name: str) -> ModuleType:
     """Look up a stage module, failing with the list of what does exist."""
 
@@ -90,4 +112,5 @@ __all__ = [
     "available_stages",
     "get_stage",
     "s0_preprocess",
+    "uses_gpu",
 ]

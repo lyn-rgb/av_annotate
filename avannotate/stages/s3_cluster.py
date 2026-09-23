@@ -44,6 +44,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s3-cluster"
+#: numpy and the HAC in scikit-learn.
+USES_GPU = False
 #: v2: writes a reference still per identity.  Everything this stage
 #: produced before was numbers, and numbers cannot be looked at -- which
 #: matters because "who is F001?" is a question a person has to answer.

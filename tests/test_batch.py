@@ -274,6 +274,47 @@ def test_workers_can_be_asked_for_explicitly() -> None:
     assert workers == 5
 
 
+def test_a_run_of_card_free_stages_is_sized_by_cores() -> None:
+    """The cards have nothing to do with how fast S0 goes.
+
+    One worker per card is the answer for a stage that loads a model onto one.
+    For the five stages that never touch a card it is an arbitrary number -- on
+    a four-card machine, four videos at a time -- and the thing that actually
+    bounds the work is the CPU.
+    """
+
+    devices, workers = batch.plan_workers(gpus=(0, 1, 2, 3), requested=None, cpu_only=True)
+
+    assert devices == (0, 1, 2, 3), "the cards are still reported; they are just not used"
+    assert workers == batch.cpu_workers()
+
+
+def test_the_cpu_default_is_never_more_than_the_cores_there_are() -> None:
+    """Sixteen processes on an eight-core box is context switching, not
+    parallelism -- and sixteen copies of the same imports."""
+
+    assert batch.cpu_workers() <= batch.CPU_WORKERS
+    assert batch.cpu_workers() >= 1
+
+
+def test_an_explicit_count_beats_the_cpu_default() -> None:
+    """The operator measured; the default is a guess that loses to a number."""
+
+    _, workers = batch.plan_workers(gpus=(0, 1), requested=3, cpu_only=True)
+
+    assert workers == 3
+
+
+def test_a_mixed_run_is_sized_by_the_cards() -> None:
+    """The driver runs one stage at a time, so this is the caller who asked
+    for several -- and one that loads a model must not be run sixteen-ways on
+    four cards."""
+
+    _, workers = batch.plan_workers(gpus=(0, 1, 2, 3), requested=None, cpu_only=False)
+
+    assert workers == 4
+
+
 def test_zero_workers_is_rejected() -> None:
     with pytest.raises(ValueError, match="at least 1"):
         batch.plan_workers(gpus=(0,), requested=0)

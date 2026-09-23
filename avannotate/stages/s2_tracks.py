@@ -55,6 +55,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s2-tracks"
+#: ffmpeg, cutting crops out of the source.
+USES_GPU = False
 VERSION = "s2-v1"
 
 TRACKS_NAME = "tracks.jsonl"

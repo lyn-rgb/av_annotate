@@ -51,6 +51,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s0-preprocess"
+#: ffprobe, ffmpeg and PySceneDetect; nothing here imports torch.
+USES_GPU = False
 VERSION = "s0-v2"
 
 PROBE_NAME = "probe.json"

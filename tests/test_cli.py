@@ -219,3 +219,57 @@ def test_the_slow_steps_before_the_header_announce_themselves(
     assert "list      " in out
     assert "resolved" in out
     assert "gpus      detecting" in out
+
+
+def _captured_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str
+) -> dict[str, object]:
+    """Run a batch with the pool stubbed out, and report what it was asked for."""
+
+    from avannotate import batch as batch_module
+
+    captured: dict[str, object] = {}
+
+    def run_corpus(jobs: object, **kwargs: object) -> list[object]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(batch_module, "run_corpus", run_corpus)
+    monkeypatch.setattr(batch_module, "detect_gpus", lambda: (0, 1, 2, 3))
+
+    assert cli._cmd_batch(_batch_args(tmp_path, *extra)) == 0  # type: ignore[arg-type]
+    return captured
+
+
+def test_a_stage_that_uses_no_card_is_run_more_ways_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S0 over four cards' worth of workers, with the cards idle, is the shape
+    of the problem this default exists to fix."""
+
+    from avannotate import batch as batch_module
+
+    captured = _captured_workers(tmp_path, monkeypatch, "--stage", "s0-preprocess")
+
+    assert captured["workers"] == batch_module.cpu_workers()
+    assert captured["workers"] > len(captured["gpus"])  # type: ignore[arg-type]
+
+
+def test_a_stage_that_uses_a_card_still_gets_one_worker_per_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default that was already right, unchanged."""
+
+    captured = _captured_workers(tmp_path, monkeypatch, "--stage", "s10-caption")
+
+    assert captured["workers"] == 4
+
+
+def test_the_header_says_why_the_worker_count_is_what_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The line an operator reads to check the sizing came out as they meant."""
+
+    _captured_workers(tmp_path, monkeypatch, "--stage", "s3-cluster")
+
+    assert "no stage here uses a GPU" in capsys.readouterr().out

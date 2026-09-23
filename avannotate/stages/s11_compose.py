@@ -69,6 +69,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s11-compose"
+#: merging intervals and rendering text.
+USES_GPU = False
 #: v2: the timeline_sanity message printed its spans to two decimals, which
 #: rounded away the overshoot it was reporting -- a span at 8.7201 in an
 #: 8.715 s video read as "8.72 outside 8.72".  The gate was right and the

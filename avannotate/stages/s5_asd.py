@@ -62,6 +62,8 @@ from avannotate.stages.base import (
 )
 
 STAGE = "s5-asd"
+#: LoCoNet, on torch.
+USES_GPU = True
 #: v2: the audio frontend was a generic log-mel rather than VGGish's, which
 #: made every probability this stage produced meaningless.  The bump is what
 #: makes the stage re-run -- ``reason_to_run`` compares this string, and the
