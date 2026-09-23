@@ -16,18 +16,24 @@ Two people are discussing in a spacious living room.
 
 [SHOT 1 0.0s-12.4s]
 A bright living room with a sofa and a coffee table.
-<F001> whispering: <S>I was late for work today</S>
-<F002> surprised: <S>What's going on?</S>
+<F001> whispering: <S>I was late for work today<E>
+<F002> surprised: <S>What's going on?<E>
 
 [SHOT 2 12.4s-31.0s]
 The camera moves closer to the window.
-<F001> <S>I forgot my phone</S>
+<F001> <S>I forgot my phone<E>
 ```
 
-Grammar: ``<F(\d+)>\s*([\w-]+)?:?\s*<S>(.*?)</S>``. The tag is optional; the
+Grammar: ``<F(\d+)>\s*([\w-]+)?:?\s*<S>(.*?)<E>``. The tag is optional; the
 colon is required when it is present. `F000` is reserved for off-screen speech
 (narration, a phone call), because the grammar requires a face tag and an
 unattributed utterance therefore needs an id rather than no tag.
+
+**`<E>`, not `</S>`.** The converter downstream accepts both — its pattern is
+``<S>…(?:</S>|<E>)`` — and that tolerance is exactly why this pipeline rendered
+the wrong one for a long time without anybody noticing: a corpus that reads fine
+downstream can still be the wrong corpus. The manifests this feeds use `<E>`.
+Tolerance written for hand-edited files is not a licence for a generator.
 
 `annotation.json` is the machine-readable form and the only artifact downstream
 code reads. Every intermediate the pipeline writes is private to its stage, so a
@@ -67,32 +73,45 @@ change to the script format re-renders and never re-runs a model.
 | `avannotate/stages/s10_caption.py` | S10 — what the video and each shot look like |
 | `avannotate/stages/s11_compose.py` | S11 — the deliverable and its quality report |
 | `avannotate/requirements.py` | what each stage needs from the machine |
-| `avannotate/batch.py` | the corpus driver: planning, pools, progress |
-| `avannotate/cli.py` | `avannotate run --stage … --input … --output …` |
+| `avannotate/media.py` | what counts as a video file, for every caller that asks |
+| `avannotate/model_cache.py` | one model per stage per process, not per video |
+| `avannotate/threads.py` | how many threads one worker may have, and why not all of them |
+| `avannotate/progress.py` | the one redrawn line, and when it is a line instead |
+| `avannotate/quiet.py` | run a chatty model library without it reaching the log |
+| `avannotate/report.py` | what a corpus run produced, read back off the disk |
+| `avannotate/batch.py` | planning, pools, and the progress a watcher sees |
+| `avannotate/cli.py` | `run`, `batch`, `report`, `doctor`, `stages` |
 
 Everything except the detector call itself is pure Python over JSON, which is
 what makes it testable without a model or a GPU.
 
 ## Status
 
-All eleven stages are implemented and tested: **S0** (probe, audio, shots),
+All twelve stages are implemented and tested: **S0** (probe, audio, shots),
 **S1** (detection + embeddings), **S2** (tracking), **S3** (identity
 clustering), **S4** (diarization), **S5** (active speaker detection), **S6**
 (association), **S7** (target-speaker extraction), **S8** (ASR), **S9**
 (paralinguistic tagging), **S10** (captioning) and **S11** (compose) — plus the
-deliverable format, segmentation, and the QA gates. 611 tests.
+deliverable format, segmentation, and the QA gates. 872 tests.
 
-The **batch driver** is `avannotate batch`, or `scripts/run_batch.sh` for a
-one-command run: it walks a corpus, runs one video per worker, pins each worker
-to a GPU, prints progress per video, and writes `index.jsonl` and
-`failures.jsonl` beside the outputs. One bad video is recorded and the batch
-carries on.
+Five of the twelve use no card, and each says so in its own module
+(`USES_GPU`): S0 is ffprobe, ffmpeg and PySceneDetect; S2 cuts crops with
+ffmpeg; S3 is numpy and scikit-learn; S6 and S11 are arithmetic and text. The
+other seven load a model. That distinction is not cosmetic — it is what the
+batch sizes its pool by, and getting it wrong is a corpus that takes longer
+than it needed to, quietly.
+
+The **driver** is `scripts/run_corpus.sh`: one stage over the whole corpus, then
+the next. `scripts/run_batch.sh` — and `avannotate batch` underneath it — runs
+each video end to end instead, which is what you want for a handful and the
+wrong thing for a thousand. Both record a bad video and carry on.
 
 **S4, S5, S7, S8, S9 and S10 need GPUs and packages that are not installed
-here.** Their model adapters are written against source that was read rather
-than executed; each names in its own docstring what to verify first. Everything
-that decides what goes into a model pass, and what its output means, is
-separate, pure, and tested.
+here.** Each names in its own docstring what to verify first. Everything that
+decides what goes into a model pass, and what its output means, is separate,
+pure, and tested. All of them have since been run against a real corpus on a
+cluster; `docs/server-setup.md` has what that cost, what it taught, and the
+handful of things that were wrong in ways nothing reported.
 
 **S5 verified further than the rest**: its network was built and run here, and
 the last four assumptions about it were wrong — the crop margin, the mel-band
@@ -104,6 +123,10 @@ decision worth making explicitly rather than assuming. `docs/server-setup.md`
 has the detail.
 
 ### Running it
+
+One stage over one list of videos — for building a stage, debugging one, or
+re-rendering the deliverable after a change to `annotation.py`. A corpus wants
+the driver in the next section.
 
 ```bash
 avannotate run --stage s0-preprocess --input data/examples.txt --output ./outputs
@@ -137,35 +160,172 @@ after a crash costs only the video that was in flight.
 ### Running a corpus
 
 ```bash
-scripts/run_batch.sh --data /data/videos --list names.txt --output /results
+scripts/run_corpus.sh --data /data/videos --list names.txt --output /results
 ```
 
-or the same thing spelled out:
+#### The list file
+
+One video per line, `#` for comments, blanks ignored. An entry is resolved
+against `--data` first and then against the list's own directory, so both
+conventions work. What is worth knowing is that **the entry does not have to
+name a file**: these lists are usually dataset indices that name a clip by its
+id and leave the extension to however the file was written to disk —
+
+```
+part_001/43/be/43bec54bbf4ede08ce0a6c8736335495
+```
+
+— while the file is `43bec54b….mkv`. So an entry that resolves to nothing by its
+exact name is tried again with a media extension on it, filtered by the same
+predicate the directory scan uses: `clip.json` beside `clip.mp4` is not a
+candidate, and neither is a `._clip.mp4` sidecar. Exactly one match, or none —
+two files called `clip.mp4` and `clip.mkv` is a question this cannot answer, and
+guessing would annotate a video nobody chose.
+
+An entry that resolves to nothing at all is an error naming the entries, not a
+skip. A silently short corpus is the failure that looks like success.
+
+**Stage-major, not video-major.** S1 over every video, then S2 over every video.
+`run_batch.sh` does the opposite and is right for ten videos, but every stage
+builds its model inside `run()` and `run()` is called once per video — so a
+video-major corpus of a thousand videos builds the captioner a thousand times,
+and the captioner is sixteen gigabytes off a disk. Running stage-major makes the
+per-process model cache in `avannotate.model_cache` pay: **one load per stage
+per worker** instead of one per video.
+
+Start with the pre-flight, which resolves the list and loads nothing:
 
 ```bash
-avannotate batch --input names.txt --output /results
+scripts/run_corpus.sh --data /data/videos --list names.txt --output /results --dry-run
 ```
 
-A **video** is the unit of work rather than a stage, so each one is finished or
-not: a corpus can be stopped at any point and still hold complete deliverables,
-and a failure at S7 leaves that video incomplete rather than leaving every video
-incomplete. One worker per GPU, because each stage adapter loads its own model
-and two workers sharing a card would swap weights for every video.
-
 ```
-videos    240
+list      /data/videos/names.txt
+          8716 entries resolved
+gpus      detecting
+videos    8716
 stages    s0-preprocess, s1-faces, ... s11-compose
-workers   4  on GPUs 0, 1, 2, 3
+workers   8  on GPUs 0, 1, 2, 3, 4, 5, 6, 7
 
-[   1/240]   0.4%  ok    a3f1c2  1m 42s  utt=48 faces=2 gates=0  eta 6h 47m
-[   2/240]   0.8%  ok    b41ceb  2m 06s  utt=31 faces=1 gates=0  eta 6h 58m
-[   3/240]   1.2%  FAIL  c4792c  0m 11s  s1-faces: SSLError: ...
+dry run: nothing started
 ```
 
-`index.jsonl` gets one record per video with a per-stage timing breakdown;
-`failures.jsonl` gets the failures with their full error text. The exit code is
-non-zero if anything failed, so a scheduler notices without the corpus paying
-for it.
+`videos` is the number to read: a list that resolves to fewer than it has lines
+is a corpus that will come out short, and it is the only input that can be wrong
+in a way nobody notices until the end. The `doctor` also runs automatically for
+the stages about to be attempted, so a machine that cannot run one says so
+before the pass rather than during it.
+
+Then drop `--dry-run`. While it runs, each stage draws one line and redraws it:
+
+```
+s5-asd  [==========>             ]  423/1000   42%  18m 12s  eta 24m 50s
+```
+
+Nothing else is written per video. **Failures are the exception** — they always
+get a full line, because the bar can only say how many and a line is the only
+thing that says which video and why. On a machine with no terminal to draw on
+(a `nohup`, a cron job) the same numbers are written as a line every thirty
+seconds instead, since a bar redrawn into a log file is a log file full of
+carriage returns.
+
+`--verbose` puts back the per-video-per-stage lines the bar replaced. That is
+the escape hatch for "it has stopped moving, where is it".
+
+#### How many at once
+
+`--workers` defaults to one per card for a stage that uses one, and to
+`min(16, cores)` for a stage that does not. The two are different because the
+answers are: a stage holding a model on a card is bounded by the card, and one
+doing arithmetic is bounded by the CPU, which has nothing to do with how many
+cards there are.
+
+Those defaults are right more often than not, but **raise it for a stage that is
+not saturating its card**. S1 is the one this was measured on: four workers put
+the GPU at 3% of its capacity, and sixteen put it near 80% because the frame
+decoding and the per-frame Python were the limit, not the network. Conversely
+**lower it for a stage whose memory is the limit** — S4's diarizer halves its
+batch size on every CUDA out-of-memory and keeps what fitted, so four workers
+per card means each of them settles at a quarter of the batch it could have had.
+Its `summary.json` records `batch_size_used` for exactly this reason.
+
+```
+scripts/run_corpus.sh ... --stages s1-faces --workers 16
+scripts/run_corpus.sh ... --stages s4-diarize --workers 8
+```
+
+#### Stopping, restarting, and what is skipped
+
+Re-run the same command. Every stage records its version, its config hash, its
+input hash and the size and hash of everything it wrote, and skips itself only
+when all of that still matches — so a restart costs the videos that were in
+flight and nothing else. Watching it, the bar will race to 100% with everything
+skipped; that is success, not a no-op.
+
+Two things to know about the skip:
+
+- **It is per `--output`.** The records live in the work directories under it, so
+  pointing at a different output directory is a fresh corpus and nothing skips.
+- **`--force` overrides it**, and is what you want after a change that alters a
+  stage's *results* rather than its bookkeeping.
+
+`--from s1-faces` skips the stages before it — a convenience, not a check.
+
+#### What the corpus produced
+
+At the end of the run — and also when it stops early, which is when it matters
+most — two files land in the output directory:
+
+- **`corpus_report.md`**, for a person: how many videos succeeded, where the
+  rest stopped, and every failure listed.
+- **`corpus_report.json`**, the same thing for a program, with the error text
+  unclipped.
+
+```
+## Summary
+
+|  | videos | share |
+|---|---|---|
+| succeeded | 987 | 98.7% |
+| failed | 13 | 1.3% |
+
+## Where they stopped
+
+| stage | stopped here | also failed here |
+|---|---|---|
+| s4-diarize | 1 | 1 |
+| s7-tse | 1 | 2 |
+
+## Failures (13)
+
+- **11×** `s7-tse` — TseError: the extractor wrote nothing
+```
+
+A video **succeeds** when S11 wrote its `annotation.json`; it **fails once**, at
+the first stage that stopped it. The second column is the difference: under a
+stage-major run every later stage retries and fails for want of input, so one S7
+failure leaves failed records in S7 through S11 — counting those would report one
+broken video as five. The gap between the columns is what separates "S8 is
+broken" from "S8 has nothing to read".
+
+Read it back at any time, including while a batch is working:
+
+```bash
+avannotate report --output /results --list names.txt
+```
+
+Its exit status is non-zero when any video failed, and so is `run_corpus.sh`'s —
+which is asked once at the end and answers for the corpus. (Not the batch's own
+exit code: each stage invocation exits non-zero when anything failed, so keying
+the driver on that would stop a thousand-video run because one video could not
+get through S3.)
+
+`index.jsonl` is still written — one record per video with a per-stage timing
+breakdown — and it is where to look for "which stage is actually costing me".
+`failures.jsonl` is still written too, but it is **overwritten by every stage
+invocation**, of which a stage-major run makes twelve: after a full run it holds
+S11's failures and nothing else. It is the right thing to read *during* a stage.
+The report is what survives one.
 
 ### Before a batch: ask the machine what it has
 
@@ -177,7 +337,17 @@ Reports, per stage, whether this machine can run it — the packages, the
 checkouts and the weight files — and for anything missing, the command that
 fixes it. It resolves model paths the way the stages do, against the directory
 of the config that names them, so it cannot report a model missing that a run
-would have found.
+would have found. `run_corpus.sh` runs it itself, for the stages it is about to
+attempt, so this is for asking by hand rather than a step to remember.
+
+It checks one thing that is neither a package nor a file, and that is the most
+expensive thing this document knows about: **whether `onnxruntime` can reach a
+card.** `onnxruntime` and `onnxruntime-gpu` are the same import, the same
+`InferenceSession` and the same version string; what differs is whether
+`CUDAExecutionProvider` is among the ones they offer, and a session asked for it
+falls back to the CPU **without failing**. S1 then runs about ten times slower
+with the card idle, and nothing in its output distinguishes that from the normal
+case. The doctor says so, in those words, rather than reporting the stage ready.
 
 Two of the six models are research repositories rather than packages, and two
 need weights that no package fetches. `scripts/setup_server.sh` does the parts

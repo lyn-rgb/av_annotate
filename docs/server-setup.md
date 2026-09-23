@@ -778,43 +778,125 @@ laptop — the numbers that decide sharding have to come from the server.
 
 ## Running the pipeline
 
+`scripts/run_corpus.sh` runs one stage over the whole corpus, then the next:
+
 ```bash
-avannotate run --stage s0-preprocess --input videos.txt --output ./outputs
-avannotate run --stage s1-faces     --input videos.txt --output ./outputs \
-    --config configs/s1.insightface.json
-avannotate run --stage s2-tracks    --input videos.txt --output ./outputs \
-    --config configs/s2.default.json
-avannotate run --stage s3-cluster   --input videos.txt --output ./outputs \
-    --config configs/s3.default.json
-avannotate run --stage s4-diarize   --input videos.txt --output ./outputs \
-    --config configs/s4.diarizen.json
-avannotate run --stage s5-asd       --input videos.txt --output ./outputs \
-    --config configs/s5.loconet.json
-avannotate run --stage s6-associate --input videos.txt --output ./outputs \
-    --config configs/s6.associate.json
-avannotate run --stage s7-tse       --input videos.txt --output ./outputs \
-    --config configs/s7.clearvoice.json
-avannotate run --stage s8-asr       --input videos.txt --output ./outputs \
-    --config configs/s8.whisper.json
-avannotate run --stage s9-paralinguistic --input videos.txt --output ./outputs \
-    --config configs/s9.paralinguistic.json
-avannotate run --stage s10-caption --input videos.txt --output ./outputs \
-    --config configs/s10.caption.json
-avannotate run --stage s11-compose --input videos.txt --output ./outputs \
-    --config configs/s11.compose.json
+scripts/run_corpus.sh --data /path/to/videos --list names.txt --output /results
 ```
 
-S11 needs nothing installed — it runs no model, reads JSON and writes text. It is
-also the stage to run on its own after any change to `annotation.py` or
+Stage-major rather than video-major, because of the models: every stage builds
+its own inside `run()`, `run()` is called once per video, and a video-major
+corpus of a few thousand videos therefore builds the captioner a few thousand
+times. Stage-major plus the per-process cache in `avannotate.model_cache` makes
+that one load per stage per worker. `run_batch.sh` is the video-major one, and is
+right for a handful of videos and the wrong thing for a thousand.
+
+```bash
+# resolve the list and report the plan; loads nothing
+scripts/run_corpus.sh --data ... --list ... --output ... --dry-run
+
+# a line per video per stage, instead of the progress bar
+scripts/run_corpus.sh ... --verbose
+
+# start at a stage, skipping the check on the ones before it
+scripts/run_corpus.sh ... --from s7-tse
+```
+
+`--workers` defaults to one per card for a stage that uses one and
+`min(16, cores)` for a stage that does not, and the README explains when to move
+it in either direction.
+
+S11 needs nothing installed — it runs no model, reads JSON and writes text. It
+is also the stage to run on its own after any change to `annotation.py` or
 `compose/`: re-rendering a corpus costs seconds, where re-running anything that
 touches a GPU costs days.
 
-Every stage skips itself when its outputs are present and unchanged, so a rerun
-after a crash costs only the video that was in flight. `--force` overrides that.
+**An entry in the list need not name a file.** These lists are usually dataset
+indices that name a clip by its id and leave the extension to disk, so
+`part_001/43/be/43bec54b…` is resolved by trying that name and then that name
+with each media extension on it. One match or none; two candidates is an error
+rather than a guess.
+
+**S7 needs its working directory to be writable.** ClearerVoice reads its
+checkpoint from `checkpoints/` *relative to the process's working directory*,
+with no argument to override it, and `run_batch.sh` runs from the data root
+because that is what the list's entries are relative to. So the checkpoint is
+linked into the data directory — which on a shared cluster mount may be
+read-only. There is a check for it that runs before anything else, because the
+alternative is discovering it at S7 with every stage before it already done.
+
+## What running it for real cost
+
+One corpus: 8,716 clips, 8 GPUs, 128 cores, one stage at a time. These are the
+numbers that were worth having, and every one of them was a surprise.
+
+| what | what it was |
+| --- | --- |
+| S0 over 8,716 clips | about an hour. ffprobe, ffmpeg and PySceneDetect; no card involved |
+| S1 at four workers | **3%** of a card, and slow. 20% after the thread fix, card still idle |
+| S4 at four workers per card | each worker's usable batch was a quarter of what one per card leaves |
+| S10, unconfigured | on the CPU, ETA **24 hours** |
+| Log volume | the libraries produced more output than the pipeline did |
+
+The S4 row is the one figure here that was not measured: it is what the
+mechanism below implies, and `batch_size_used` is now recorded so that the next
+run answers the question instead of implying the answer.
+
+Every one of them had the same shape: **it worked, it was correct, and it was
+silently several times slower than it should have been.** Nothing raised. The
+six below are what came out of it, and most of them are properties of the
+libraries rather than of this code — a new stage that calls a new model meets
+them again.
+
+**No thread count was set anywhere.** Every worker spawned its own OpenCV pool,
+OpenMP pool, torch pool and onnxruntime pool, each defaulting to one thread per
+core — sixteen workers on a 128-core machine asking for two thousand threads to
+run sixteen videos. They do not sleep while they wait, they spin, and the shape
+that produces is a worker burning seven cores while the card it feeds sits at
+3%. `avannotate.threads` now divides the machine among the workers instead:
+`cores // workers`, set in the worker initialiser because those libraries read
+it once, at import, and a pool that already exists ignores the environment.
+
+**onnxruntime falls back to the CPU without failing.** S1's models would have
+run ten times slower with the card idle, and nothing in the output would have
+said so. The doctor now checks for `CUDAExecutionProvider` and says it in those
+words; `run_corpus.sh` runs the doctor before it starts.
+
+**`device: null` meant the CPU, to one stage only.** Everywhere else it means
+"pick one" — S8 hands `"auto"` to faster-whisper, S7 and S9 leave it to their
+libraries. S10 took it literally: no `device_map` passed and no `.to()`
+afterwards, so `from_pretrained` loaded an 8B vision model to the CPU and left
+it there. It now means what it means everywhere else.
+
+**A batch size that halves is worth a line.** S4's checkpoint asks for 32, which
+does not fit a 24 GB card, so the adapter halves on every CUDA out-of-memory and
+keeps what fitted. The message saying so went to stdout, which in a worker is a
+block-buffered pipe, and the pool is terminated rather than joined — so an
+unflushed buffer was discarded. A run where every worker had halved its way down
+to one chunk at a time looked exactly like a run where nothing was wrong. It
+goes to stderr, flushed, now, and the stage records `batch_size_used`.
+
+**Two of the model libraries narrate.** ClearerVoice announces the model and
+says something per file, and shells out to ffmpeg for the audio, whose output
+inherits the process's. The taggers draw tqdm bars, print a timing dict per
+call, and let `transformers` write its warnings. Both are called once per file,
+so a corpus produced more of their output than of ours — over the top of the
+progress bar, which is the stage's own report. `avannotate.quiet` redirects the
+descriptors around the calls and keeps what was said for the error message.
+
+**One input shape mangles the picture silently.** `probe_media` reads the coded
+dimensions; ffmpeg applies the display matrix by default. For a clip carrying a
+rotation they disagree, and because the pixel count of `w×h` and `h×w` is the
+same, every read still lines up and nothing raises — the frame comes back
+sideways and the detector finds no faces in it. All four decoders now pass
+`scale=w:h`, which pins the output to the size the probe reported. A clip with a
+rotation is still decoded sideways rather than upright; fixing that properly
+means probing the display matrix and carrying the orientation through, and it is
+not done.
 
 ## Throughput
 
-Measured here, on CPU, over 26 seconds of video across three clips:
+Measured on a laptop, on CPU, over 26 seconds of video across three clips:
 
 | stage | time | note |
 | --- | --- | --- |
@@ -822,15 +904,10 @@ Measured here, on CPU, over 26 seconds of video across three clips:
 | S1 (insightface, stride 3) | 63s | ~2.4x realtime; a GPU is far faster |
 | S2 | <1s | pure Python |
 | S3 | <1s | pure Python |
-| S4 (DiariZen) | not measured here | GPU; the WavLM front end is the cost |
-| S5 (LoCoNet) | not measured here | GPU; one pass per target per window |
-| S7 (ClearerVoice) | not measured here | GPU; scales with speaking time, not screen time |
-| S8 (faster-whisper) | not measured here | GPU; one decode per segment, so also speech-proportional |
-| S9 (three taggers) | not measured here | GPU; three passes per segment, the delivery model being a generative decode |
-| S10 (Qwen3-VL) | not measured here | GPU; one request per shot, cost driven by images per request |
+| S4 … S10 | not measured here | need a GPU, a repo clone, or more RAM than this machine has |
 
-S1 dominates and is what to profile first on real hardware. `embedding_interval_seconds`
-changes only disk, not runtime: insightface computes the vector as part of its
-own pipeline whether or not it is written. `allowed_modules=["detection",
-"recognition"]` skips the two bundled models this pipeline never uses and cut
-that measurement by about 22%.
+S1 dominates and is what to profile first on real hardware.
+`embedding_interval_seconds` changes only disk, not runtime: insightface
+computes the vector as part of its own pipeline whether or not it is written.
+`allowed_modules=["detection", "recognition"]` skips the two bundled models this
+pipeline never uses and cut that measurement by about 22%.

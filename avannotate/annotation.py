@@ -25,7 +25,7 @@ Shape rules, all load-bearing:
 * An utterance belongs to the shot containing its **start**; utterances are
   never split across shots.
 * The paralinguistic tag is optional.  With a tag the line reads
-  ``<F001> tag: <S>...</S>``; without one, ``<F001> <S>...</S>``.  Both parse,
+  ``<F001> tag: <S>...<E>``; without one, ``<F001> <S>...<E>``.  Both parse,
   because the tag group is optional and the colon is optional with it.
 * Captions are visual only.  Nothing in a caption depends on the audio chain.
 * ``<F000>`` carries off-screen speech (narration, a phone call).  The grammar
