@@ -9,6 +9,8 @@ extraction on the wrong person.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import wave
 from pathlib import Path
 
@@ -22,7 +24,12 @@ from avannotate.segment import SegmentationConfig
 from avannotate.stages import s0_preprocess, s2_tracks, s3_cluster, s6_associate, s7_tse
 from avannotate.stages.base import StageContext
 from avannotate.tse.crop_video import crop_tile, iter_tiles, write_crop_video
-from avannotate.tse.model import ClearerVoiceExtractor, TseError, build_extractor
+from avannotate.tse.model import (
+    ClearerVoiceExtractor,
+    TseError,
+    _tail,
+    build_extractor,
+)
 from avannotate.tse.plan import (
     ExtractionSegment,
     context_window,
@@ -879,3 +886,110 @@ def test_a_tracked_face_with_no_output_is_still_an_error(tmp_path: Path) -> None
 
     with pytest.raises(TseError, match="tracked a face"):
         _extractor(_TrackedButSilent()).extract(source, tmp_path / "scratch")
+
+
+# --------------------------------------------------------------------------- #
+# a library that narrates
+# --------------------------------------------------------------------------- #
+#
+# ClearerVoice announces the model, says something about every file, and shells
+# out to ffmpeg for the audio -- whose own output inherits this process's and
+# lands in the log.  S7 calls it once per file, so a corpus produces more of the
+# library's output than of ours, over the top of the progress bar that exists to
+# replace it.
+#
+# Run in a subprocess on purpose.  Pytest captures at both levels -- it replaces
+# sys.stdout and redirects the file descriptor -- so an in-process test cannot
+# tell "the redirection worked" from "pytest swallowed it first".  A child
+# process's stdout is this test's pipe, and what does or does not arrive there
+# is the whole question.
+
+_QUIET_PROBE = """
+import subprocess, sys
+from avannotate.tse.model import _quiet
+
+print("ours: before")
+with _quiet() as said:
+    print("library: a python-level print")
+    subprocess.run(["sh", "-c", "echo 'library: a subprocess line' >&2"])
+    captured = said()
+print("ours: after")
+print("CAPTURED_START")
+print(captured)
+print("CAPTURED_END")
+"""
+
+
+def _probe() -> tuple[str, str]:
+    """(what reached the outside, what the context manager kept)."""
+
+    result = subprocess.run(
+        [sys.executable, "-c", _QUIET_PROBE],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    live, _, rest = result.stdout.partition("CAPTURED_START")
+    kept, _, _ = rest.partition("CAPTURED_END")
+    return live, kept
+
+
+def test_the_library_is_quiet_and_what_it_said_is_kept() -> None:
+    """Suppressed, not discarded: the last lines are what a failure needs."""
+
+    live, kept = _probe()
+
+    assert "ours: before" in live and "ours: after" in live
+    assert "library:" not in live, "it leaked into the stage's own output"
+    assert "library: a python-level print" in kept
+    assert "library: a subprocess line" in kept
+
+
+def test_the_streams_are_kept_apart() -> None:
+    """Not one file: interleaving makes "the last five lines" mean nothing.
+
+    Python's stdout is block buffered and a subprocess's stderr is not, so a
+    line printed first regularly lands last -- and the tail of that is not the
+    end of anything.
+    """
+
+    _, kept = _probe()
+
+    assert kept.index("stdout:") < kept.index("stderr:")
+    assert "a python-level print" in kept.split("stderr:")[0]
+    assert "a subprocess line" in kept.split("stderr:")[1]
+
+
+def test_a_failing_extraction_carries_what_the_library_said(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """The message a reader gets when the extractor dies on a real crop."""
+
+    source = tmp_path / "crop.mp4"
+    source.write_bytes(b"\x00")
+
+    extractor = ClearerVoiceExtractor.__new__(ClearerVoiceExtractor)
+    extractor.model_name = "test"
+    extractor.device = None
+
+    class _Chatty:
+        def __call__(self, **kwargs: object) -> object:
+            print("face track 0: no audio")
+            raise RuntimeError("no audio stream")
+
+    extractor._model = _Chatty()
+
+    # Disabled because the library's output has to reach the descriptor this
+    # redirection replaces; under pytest's capture it never gets that far.
+    with capfd.disabled(), pytest.raises(TseError) as raised:
+        extractor.extract(source, tmp_path / "out")
+
+    message = str(raised.value)
+    assert "no audio stream" in message, "the original error must survive"
+    assert "face track 0: no audio" in message, "and so must what it said"
+
+
+def test_the_tail_is_the_end_of_what_was_said() -> None:
+    said = "\n".join(f"line {index}" for index in range(20))
+
+    assert _tail(said) == " | ".join(f"line {index}" for index in range(15, 20))
