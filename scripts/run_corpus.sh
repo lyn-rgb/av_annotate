@@ -127,8 +127,16 @@ printf '  logs      %s/\n' "$LOGS"
 printf '  combined  %s/run.log\n\n' "$OUTPUT"
 
 if (( DRY_RUN )); then
-    printf 'dry run, nothing started\n'
-    exit 0
+    # The stage plan above is this script's; the video count is the batch's, and
+    # it is the half that catches a list naming files nothing can find.  Asking
+    # for all the stages rather than one keeps the header honest.
+    joined="$(IFS=,; printf '%s' "${plan[*]}")"
+    args=(--list "$LIST" --output "$OUTPUT" --stages "$joined" --dry-run)
+    [[ -n "$DATA" ]] && args+=(--data "$DATA")
+    [[ -n "$GPUS" ]] && args+=(--gpus "$GPUS")
+    [[ -n "$WORKERS" ]] && args+=(--workers "$WORKERS")
+    "$ROOT/scripts/run_batch.sh" "${args[@]}"
+    exit $?
 fi
 
 # Appended, not truncated: the whole point of this file is to outlive the

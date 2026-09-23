@@ -12,6 +12,7 @@
 #   --workers N      videos at once (default: one per GPU, or 1 with none)
 #   --only-missing   skip videos that already have a deliverable
 #   --verbose        a line per stage rather than per video
+#   --dry-run        resolve the list and report the plan, without running
 #
 # This is a thin wrapper.  The work is `avannotate batch`, which is where the
 # GPU detection, the pool and the progress reporting live -- a shell script
@@ -73,6 +74,7 @@ GPUS=""
 WORKERS=""
 ONLY_MISSING=0
 VERBOSE=0
+DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -84,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --workers) WORKERS="$2"; shift 2 ;;
         --only-missing) ONLY_MISSING=1; shift ;;
         --verbose|-v) VERBOSE=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
         -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -121,6 +124,18 @@ fi
 # leaves behind -- puts the link *inside* it rather than replacing it, and the
 # file it was meant to provide is then still missing.  A real directory there is
 # stale by definition, so it is moved aside for inspection rather than deleted.
+# Which directory that is depends on --data: with one, this runs from the data
+# root, because that is what the list's entries are relative to.  On a cluster
+# the data root is often a shared dataset mount, and read-only.  Saying so here
+# costs a second; finding out at S7 costs every stage before it.
+if [[ -d "$ROOT/models/clearvoice/AV_MossFormer2_TSE_16K" && ! -w "$(pwd)" ]]; then
+    printf '\033[31m%s\033[0m\n' \
+        "S7 links its checkpoint into $(pwd), which is not writable." \
+        "Re-run with --data pointing at a writable directory, or pre-create" \
+        "checkpoints/ and checkpoint_dir/ there." >&2
+    exit 2
+fi
+
 for name in checkpoints checkpoint_dir; do
     [[ -d "$ROOT/models/clearvoice/AV_MossFormer2_TSE_16K" ]] || continue
     link="$name/AV_MossFormer2_TSE_16K"
@@ -146,6 +161,7 @@ if [[ -n "$STAGES" ]]; then
 fi
 [[ -n "$GPUS" ]] && ARGS+=(--gpus "$GPUS")
 [[ -n "$WORKERS" ]] && ARGS+=(--workers "$WORKERS")
+(( DRY_RUN )) && ARGS+=(--dry-run)
 (( ONLY_MISSING )) && ARGS+=(--only-missing)
 (( VERBOSE )) && ARGS+=(--verbose)
 
@@ -159,7 +175,10 @@ set +e
 status="${PIPESTATUS[0]}"
 set -e
 
-if (( status == 0 )); then
+if (( status == 0 )) && (( DRY_RUN )); then
+    # Nothing was written, so there is nothing to point at.
+    exit 0
+elif (( status == 0 )); then
     printf '\n\033[32mdone\033[0m  deliverables in %s/work/*/s11-compose/\n' "$OUTPUT"
 else
     printf '\n\033[33msome videos failed\033[0m  see %s\n' "$OUTPUT/failures.jsonl" >&2

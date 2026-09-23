@@ -142,6 +142,15 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     )
     print(flush=True)
 
+    if args.dry_run:
+        # Everything above is the answer to "will this do what I think": the
+        # list resolved to this many videos, on these devices.  A corpus run is
+        # hours of four GPUs, and the list is the one input that can be wrong
+        # in a way that only shows up at the end -- as a corpus that is short,
+        # or that is annotating files nobody meant.
+        print("dry run: nothing started")
+        return 0
+
     started = time.monotonic()
 
     # One stage is the case this is built for -- the driver runs a stage at a
@@ -346,6 +355,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="also print each stage's completion, skips included",
+    )
+    batch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="resolve the list and report the plan, without running anything",
     )
     batch.set_defaults(handler=_cmd_batch)
     return parser
